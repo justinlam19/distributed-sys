@@ -82,7 +82,7 @@ type Raft struct {
 	applyCh       chan ApplyMsg
 	winElectionCh chan struct{}
 	demoteCh      chan struct{}
-	grantVoteCh   chan struct{}
+	voteCh        chan struct{}
 	heartbeatCh   chan struct{}
 
 	// vote
@@ -149,12 +149,12 @@ func (rf *Raft) getLastLogIndex() int {
 func (rf *Raft) resetChannels() {
 	rf.winElectionCh = make(chan struct{})
 	rf.demoteCh = make(chan struct{})
-	rf.grantVoteCh = make(chan struct{})
+	rf.voteCh = make(chan struct{})
 	rf.heartbeatCh = make(chan struct{})
 }
 
 // assumes lock is held
-func (rf *Raft) becomeFollower(term int) {
+func (rf *Raft) demote(term int) {
 	state := rf.state
 	rf.state = FOLLOWER
 	rf.currentTerm = term
@@ -196,7 +196,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
+		rf.demote(args.Term)
 		reply.Term = rf.currentTerm
 	}
 
@@ -212,7 +212,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && logUpToDate {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
-		rf.nonblockingSend(rf.grantVoteCh)
+		rf.nonblockingSend(rf.voteCh)
 	}
 }
 
@@ -260,7 +260,7 @@ func (rf *Raft) requestVoteAndHandleReply(server int, args *RequestVoteArgs) {
 		return
 	}
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
+		rf.demote(args.Term)
 		return
 	}
 	if reply.VoteGranted {
@@ -321,7 +321,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if args.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
+		rf.demote(args.Term)
 		reply.Term = rf.currentTerm
 	}
 
@@ -362,18 +362,18 @@ func (rf *Raft) appendEntriesAndHandleReply(server int, args *AppendEntriesArgs)
 	reply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(server, args, reply)
 	if !ok {
-		return false
+		return true
 	}
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	if rf.state != LEADER || args.Term != rf.currentTerm || reply.Term < rf.currentTerm {
-		return false
+		return true
 	}
 	if reply.Term > rf.currentTerm {
-		rf.becomeFollower(args.Term)
-		return false
+		rf.demote(args.Term)
+		return true
 	}
 
 	if reply.Success {
@@ -382,15 +382,14 @@ func (rf *Raft) appendEntriesAndHandleReply(server int, args *AppendEntriesArgs)
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
 	} else {
 		rf.nextIndex[server]--
-		return true
+		return false
 	}
 
 	// if there exists N > commitIndex
 	//                 a majority of matchIndex[i] >= N
 	//                 and log[N].term == currentTerm
 	// then set commit index = N
-	n := rf.getLastLogIndex()
-	for n >= rf.commitIndex {
+	for n := rf.getLastLogIndex(); n > rf.commitIndex; n-- {
 		count := 1
 		if rf.log[n].Term == rf.currentTerm {
 			for i := 0; i < len(rf.peers); i++ {
@@ -404,9 +403,8 @@ func (rf *Raft) appendEntriesAndHandleReply(server int, args *AppendEntriesArgs)
 			go rf.applyLog()
 			break
 		}
-		n--
 	}
-	return false
+	return true
 }
 
 func (rf *Raft) getAppendEntriesArgs(server int) *AppendEntriesArgs {
@@ -434,12 +432,12 @@ func (rf *Raft) broadcastAppendEntries() {
 	for server := range rf.peers {
 		if server != rf.me {
 			go func() {
-				retry := true
-				for retry {
-					retry = rf.appendEntriesAndHandleReply(server, rf.getAppendEntriesArgs(server))
-					if retry {
-						time.Sleep(10 * time.Millisecond)
+				for {
+					args := rf.getAppendEntriesArgs(server)
+					if ok := rf.appendEntriesAndHandleReply(server, args); ok {
+						break
 					}
+					time.Sleep(10 * time.Millisecond)
 				}
 			}()
 		}
@@ -451,13 +449,13 @@ func (rf *Raft) applyLog() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+	for rf.lastApplied < rf.commitIndex {
+		rf.lastApplied++
 		rf.applyCh <- ApplyMsg{
 			CommandValid: true,
-			Command:      rf.log[i].Command,
-			CommandIndex: i,
+			Command:      rf.log[rf.lastApplied].Command,
+			CommandIndex: rf.lastApplied,
 		}
-		rf.lastApplied = i
 	}
 }
 
@@ -543,7 +541,7 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) randomizedTimeout() time.Duration {
+func (rf *Raft) electionTimeout() time.Duration {
 	return time.Duration(350+rand.Intn(200)) * time.Millisecond
 }
 
@@ -560,7 +558,7 @@ func (rf *Raft) ticker() {
 
 		switch state {
 		case LEADER:
-			select {
+			select { // wait until either demoted or 100ms timeout
 			case <-rf.demoteCh:
 			case <-time.After(100 * time.Millisecond):
 				rf.mu.Lock()
@@ -568,18 +566,18 @@ func (rf *Raft) ticker() {
 				rf.mu.Unlock()
 			}
 		case CANDIDATE:
-			select {
+			select { // wait until either demoted, win election, or election timeout
 			case <-rf.demoteCh:
 			case <-rf.winElectionCh:
 				rf.becomeLeader()
-			case <-time.After(rf.randomizedTimeout()):
+			case <-time.After(rf.electionTimeout()):
 				rf.startElection(state)
 			}
 		case FOLLOWER:
-			select {
-			case <-rf.grantVoteCh:
+			select { // wait until either a vote happens, heartbeat received, or election timeout
+			case <-rf.voteCh:
 			case <-rf.heartbeatCh:
-			case <-time.After(rf.randomizedTimeout()):
+			case <-time.After(rf.electionTimeout()):
 				rf.startElection(state)
 			}
 		}
