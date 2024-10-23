@@ -10,7 +10,6 @@ import (
 
 	"cs426.cloud/lab0"
 	"github.com/stretchr/testify/require"
-	// "golang.org/x/sync/errgroup"
 )
 
 type MockFetcher struct {
@@ -135,5 +134,37 @@ func TestParallelFetcher(t *testing.T) {
 }
 
 func TestParallelFetcherAdditional(t *testing.T) {
-	// TODO: add your additional tests here
+	// add your additional tests here
+	t.Run("fetch when no data available", func(t *testing.T) {
+		data := []string{}
+		pf := lab0.NewParallelFetcher(NewMockFetcher(data, 0), 2)
+		v, ok := pf.Fetch()
+		require.False(t, ok)
+		require.Empty(t, v)
+	})
+
+	t.Run("fetches proceed after max concurrent fetches complete", func(t *testing.T) {
+		data := []string{"a", "b", "c", "d", "e"}
+		pf := lab0.NewParallelFetcher(NewMockFetcher(data, 10*time.Millisecond), 2)
+		wg := sync.WaitGroup{}
+		results := make([]string, 5)
+
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				v, ok := pf.Fetch()
+				require.True(t, ok)
+				results[idx] = v
+			}(i)
+		}
+		wg.Wait()
+
+		for i := 2; i < 5; i++ {
+			v, ok := pf.Fetch()
+			require.True(t, ok)
+			results[i] = v
+		}
+		checkResultSet(t, data, results)
+	})
 }
