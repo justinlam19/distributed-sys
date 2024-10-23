@@ -152,11 +152,132 @@ func runConcurrentQueueTests(t *testing.T, q *lab0.ConcurrentQueue[int]) {
 	})
 }
 
+func runAdditionalIntQueueTests(t *testing.T, q intQueue) {
+	t.Run("pop from empty queue after multiple pushes and pops", func(t *testing.T) {
+		q.Push(1)
+		q.Push(2)
+
+		x, ok := q.Pop()
+		require.True(t, ok)
+		require.Equal(t, 1, x)
+
+		x, ok = q.Pop()
+		require.True(t, ok)
+		require.Equal(t, 2, x)
+
+		_, ok = q.Pop()
+		require.False(t, ok)
+
+		_, ok = q.Pop()
+		require.False(t, ok)
+	})
+
+	t.Run("alternating push-pop calls", func(t *testing.T) {
+		q.Push(1)
+		x, ok := q.Pop()
+		require.True(t, ok)
+		require.Equal(t, 1, x)
+
+		q.Push(2)
+		x, ok = q.Pop()
+		require.True(t, ok)
+		require.Equal(t, 2, x)
+
+		q.Push(3)
+		q.Push(4)
+		x, ok = q.Pop()
+		require.True(t, ok)
+		require.Equal(t, 3, x)
+		x, ok = q.Pop()
+		require.True(t, ok)
+		require.Equal(t, 4, x)
+	})
+
+	t.Run("handle large number of pushes and pops", func(t *testing.T) {
+		for i := 0; i < 10000; i++ {
+			q.Push(i)
+		}
+
+		for i := 0; i < 10000; i++ {
+			x, ok := q.Pop()
+			require.True(t, ok)
+			require.Equal(t, i, x)
+		}
+
+		_, ok := q.Pop()
+		require.False(t, ok)
+	})
+}
+
+func runAdditionalConcurrentQueueTests(t *testing.T, q *lab0.ConcurrentQueue[int]) {
+	const concurrency = 32
+	const iterations = 5000
+
+	ctx := context.Background()
+
+	t.Run("concurrent push and pop mix", func(t *testing.T) {
+		hasItems := true
+		for hasItems {
+			_, hasItems = q.Pop()
+		}
+
+		eg, _ := errgroup.WithContext(ctx)
+
+		for i := 0; i < concurrency; i++ {
+			eg.Go(func() error {
+				for i := 0; i < iterations; i++ {
+					q.Push(i)
+				}
+				return nil
+			})
+			eg.Go(func() error {
+				for i := 0; i < iterations; i++ {
+					q.Pop()
+				}
+				return nil
+			})
+		}
+
+		err := eg.Wait()
+		require.NoError(t, err)
+	})
+
+	t.Run("all pops after concurrent pushes", func(t *testing.T) {
+		hasItems := true
+		for hasItems {
+			_, hasItems = q.Pop()
+		}
+
+		eg, _ := errgroup.WithContext(ctx)
+
+		for i := 0; i < concurrency; i++ {
+			eg.Go(func() error {
+				for j := 0; j < iterations; j++ {
+					q.Push(j)
+				}
+				return nil
+			})
+		}
+
+		err := eg.Wait()
+		require.NoError(t, err)
+
+		for i := 0; i < concurrency*iterations; i++ {
+			_, ok := q.Pop()
+			require.True(t, ok)
+		}
+
+		_, ok := q.Pop()
+		require.False(t, ok)
+	})
+}
+
 func TestGenericQueue(t *testing.T) {
 	q := lab0.NewQueue[int]()
 
 	require.NotNil(t, q)
 	runIntQueueTests(t, q)
+	runAdditionalIntQueueTests(t, q)
 
 	qs := lab0.NewQueue[string]()
 	require.NotNil(t, qs)
@@ -167,6 +288,7 @@ func TestConcurrentQueue(t *testing.T) {
 	q := lab0.NewConcurrentQueue[int]()
 	require.NotNil(t, q)
 	runIntQueueTests(t, q)
+	runAdditionalIntQueueTests(t, q)
 
 	qs := lab0.NewConcurrentQueue[string]()
 	require.NotNil(t, qs)
@@ -175,4 +297,5 @@ func TestConcurrentQueue(t *testing.T) {
 	qc := lab0.NewConcurrentQueue[int]()
 	require.NotNil(t, qc)
 	runConcurrentQueueTests(t, qc)
+	runAdditionalConcurrentQueueTests(t, qc)
 }

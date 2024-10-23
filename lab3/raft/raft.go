@@ -153,17 +153,6 @@ func (rf *Raft) resetChannels() {
 	rf.heartbeatCh = make(chan struct{})
 }
 
-// assumes lock is held
-func (rf *Raft) demote(term int) {
-	state := rf.state
-	rf.state = FOLLOWER
-	rf.currentTerm = term
-	rf.votedFor = -1
-	if state != FOLLOWER {
-		rf.nonblockingSend(rf.demoteCh)
-	}
-}
-
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -271,6 +260,7 @@ func (rf *Raft) requestVoteAndHandleReply(server int, args *RequestVoteArgs) {
 	}
 }
 
+// assumes lock held
 func (rf *Raft) broadcastRequestVote() {
 	if rf.state != CANDIDATE {
 		return
@@ -278,7 +268,6 @@ func (rf *Raft) broadcastRequestVote() {
 
 	lastLogIndex := rf.getLastLogIndex()
 	lastLogTerm := rf.log[lastLogIndex].Term
-
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
@@ -288,9 +277,7 @@ func (rf *Raft) broadcastRequestVote() {
 
 	for server := range rf.peers {
 		if server != rf.me {
-			go func() {
-				rf.requestVoteAndHandleReply(server, &args)
-			}()
+			go rf.requestVoteAndHandleReply(server, &args)
 		}
 	}
 }
@@ -377,8 +364,7 @@ func (rf *Raft) appendEntriesAndHandleReply(server int, args *AppendEntriesArgs)
 	}
 
 	if reply.Success {
-		newMatchIndex := args.PrevLogIndex + len(args.Entries)
-		rf.matchIndex[server] = newMatchIndex
+		rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
 		rf.nextIndex[server] = rf.matchIndex[server] + 1
 	} else {
 		rf.nextIndex[server]--
@@ -407,7 +393,7 @@ func (rf *Raft) appendEntriesAndHandleReply(server int, args *AppendEntriesArgs)
 	return true
 }
 
-func (rf *Raft) getAppendEntriesArgs(server int) *AppendEntriesArgs {
+func (rf *Raft) makeAppendEntriesArgs(server int) *AppendEntriesArgs {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -425,6 +411,7 @@ func (rf *Raft) getAppendEntriesArgs(server int) *AppendEntriesArgs {
 	return &args
 }
 
+// assumes lock held
 func (rf *Raft) broadcastAppendEntries() {
 	if rf.state != LEADER {
 		return
@@ -433,7 +420,7 @@ func (rf *Raft) broadcastAppendEntries() {
 		if server != rf.me {
 			go func() {
 				for {
-					args := rf.getAppendEntriesArgs(server)
+					args := rf.makeAppendEntriesArgs(server)
 					if ok := rf.appendEntriesAndHandleReply(server, args); ok {
 						break
 					}
@@ -456,6 +443,19 @@ func (rf *Raft) applyLog() {
 			Command:      rf.log[rf.lastApplied].Command,
 			CommandIndex: rf.lastApplied,
 		}
+	}
+}
+
+// assumes lock is held
+// changes due to demotion need to happen immediately when a new term > currentTerm is found
+// notify demoteCh to ignore leader/candidate timeouts
+func (rf *Raft) demote(term int) {
+	state := rf.state
+	rf.state = FOLLOWER
+	rf.currentTerm = term
+	rf.votedFor = -1
+	if state != FOLLOWER {
+		rf.nonblockingSend(rf.demoteCh)
 	}
 }
 
@@ -558,30 +558,32 @@ func (rf *Raft) ticker() {
 
 		switch state {
 		case LEADER:
-			select { // wait until either demoted or 100ms timeout
+			heartbeatTimeoutCh := time.After(105 * time.Millisecond)
+			select { // wait until either demoted or heartbeat timeout
 			case <-rf.demoteCh:
-			case <-time.After(100 * time.Millisecond):
+			case <-heartbeatTimeoutCh:
 				rf.mu.Lock()
 				rf.broadcastAppendEntries()
 				rf.mu.Unlock()
 			}
 		case CANDIDATE:
+			electionTimeoutCh := time.After(rf.electionTimeout())
 			select { // wait until either demoted, win election, or election timeout
 			case <-rf.demoteCh:
 			case <-rf.winElectionCh:
 				rf.becomeLeader()
-			case <-time.After(rf.electionTimeout()):
+			case <-electionTimeoutCh:
 				rf.startElection(state)
 			}
 		case FOLLOWER:
+			electionTimeoutCh := time.After(rf.electionTimeout())
 			select { // wait until either a vote happens, heartbeat received, or election timeout
 			case <-rf.voteCh:
 			case <-rf.heartbeatCh:
-			case <-time.After(rf.electionTimeout()):
+			case <-electionTimeoutCh:
 				rf.startElection(state)
 			}
 		}
-
 	}
 }
 
@@ -594,8 +596,7 @@ func (rf *Raft) ticker() {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister

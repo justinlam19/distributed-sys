@@ -2,6 +2,7 @@ package lab0
 
 import (
 	"context"
+	"sync"
 )
 
 // MergeChannels should read from the channels `a` and `b`
@@ -20,7 +21,18 @@ import (
 //   - https://go.dev/tour/concurrency/4
 //   - https://go.dev/tour/concurrency/5
 func MergeChannels[T any](a <-chan T, b <-chan T, out chan<- T) {
-	panic("TODO: add your implementation")
+	var wg sync.WaitGroup
+	read := func(c <-chan T) {
+		defer wg.Done()
+		for msg := range c {
+			out <- msg
+		}
+	}
+	wg.Add(2)
+	go read(a)
+	go read(b)
+	wg.Wait()
+	close(out)
 }
 
 // MergeChannelsOrCancel provides similar semantics to MergeChannels, but
@@ -42,7 +54,32 @@ func MergeChannels[T any](a <-chan T, b <-chan T, out chan<- T) {
 // It is expected that your implemented is similar to `MergeChannels`. You do
 // not need to refactor to deduplicate your code, but you can if you want to.
 func MergeChannelsOrCancel[T any](ctx context.Context, a <-chan T, b <-chan T, out chan<- T) error {
-	panic("TODO: add your implementation")
+	var wg sync.WaitGroup
+	read := func(c <-chan T) {
+		defer wg.Done()
+		for {
+			select {
+			case msg, ok := <-c:
+				if !ok {
+					return
+				}
+				out <- msg
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+	wg.Add(2)
+	go read(a)
+	go read(b)
+	wg.Wait()
+	close(out)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }
 
 // Fetcher is an interface which mimics fetching from some source
@@ -88,5 +125,20 @@ type Fetcher interface {
 // If you are stuck, consider reading the example for `WaitGroup` here:
 //   - https://pkg.go.dev/sync#example-WaitGroup
 func MergeFetches(a Fetcher, b Fetcher, out chan<- string) {
-	panic("TODO: add your implementation")
+	var wg sync.WaitGroup
+	read := func(f Fetcher) {
+		defer wg.Done()
+		for {
+			msg, ok := f.Fetch()
+			if !ok {
+				return
+			}
+			out <- msg
+		}
+	}
+	wg.Add(2)
+	go read(a)
+	go read(b)
+	wg.Wait()
+	close(out)
 }

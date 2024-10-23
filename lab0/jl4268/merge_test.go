@@ -2,6 +2,7 @@ package lab0_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"cs426.cloud/lab0"
@@ -33,6 +34,41 @@ func runMergeTest(t *testing.T, merge mergeFunc) {
 	})
 
 	// Please write your own tests
+	t.Run("multiple items written to channels", func(t *testing.T) {
+		a := make(chan string, 5)
+		b := make(chan string, 5)
+		out := make(chan string, 10)
+
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			merge(a, b, out)
+		}()
+
+		a <- "a1"
+		b <- "b1"
+		a <- "a2"
+		b <- "b2"
+		close(a)
+		close(b)
+
+		wg.Wait()
+		require.ElementsMatch(t, []string{"a1", "b1", "a2", "b2"}, chanToSlice(out))
+	})
+
+	t.Run("one closed channel", func(t *testing.T) {
+		a := make(chan string)
+		b := make(chan string)
+		out := make(chan string)
+		close(b)
+		go func() {
+			a <- "a"
+			close(a)
+		}()
+		go merge(a, b, out)
+		require.ElementsMatch(t, []string{"a"}, chanToSlice(out))
+	})
 }
 
 func TestMergeChannels(t *testing.T) {
@@ -107,5 +143,43 @@ func TestMergeFetches(t *testing.T) {
 }
 
 func TestMergeFetchesAdditional(t *testing.T) {
-	// TODO: add your extra tests here
+	t.Run("more items than channel capacity plus goroutine", func(t *testing.T) {
+		a := make(chan string, 3)
+		b := make(chan string, 3)
+		out := make(chan string, 6)
+
+		go func() {
+			a <- "a1"
+			b <- "b1"
+			a <- "a2"
+			b <- "b2"
+			a <- "a3"
+			b <- "b3"
+			a <- "a4"
+			b <- "b4"
+			close(a)
+			close(b)
+		}()
+		go lab0.MergeFetches(newChannelFetcher(a), newChannelFetcher(b), out)
+		result := chanToSlice(out)
+		require.ElementsMatch(t, []string{"a1", "b1", "a2", "b2", "a3", "b3", "a4", "b4"}, result)
+	})
+
+	t.Run("one fetcher finishes early", func(t *testing.T) {
+		a := make(chan string, 3)
+		b := make(chan string, 3)
+		out := make(chan string, 6)
+
+		go func() {
+			a <- "a1"
+			a <- "a2"
+			close(a)
+			b <- "b1"
+			b <- "b2"
+			close(b)
+		}()
+
+		lab0.MergeFetches(newChannelFetcher(a), newChannelFetcher(b), out)
+		require.ElementsMatch(t, []string{"a1", "a2", "b1", "b2"}, chanToSlice(out))
+	})
 }
