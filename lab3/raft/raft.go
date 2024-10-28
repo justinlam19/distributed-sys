@@ -331,8 +331,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if conflictTerm != args.PrevLogTerm {
 		reply.ConflictTerm = conflictTerm
 		// search for the smallest index that has the conflict term
+		// the conflictIndex has to be a minimum of 1 (the 0th entry is a dummy entry)
 		conflictIndex := args.PrevLogIndex
-		for conflictIndex >= 0 && rf.log[conflictIndex].Term == conflictTerm {
+		for conflictIndex > 1 && rf.log[conflictIndex].Term == conflictTerm {
 			conflictIndex--
 		}
 		reply.ConflictIndex = conflictIndex
@@ -342,17 +343,18 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	argIndex, logIndex := 0, args.PrevLogIndex+1
 	for argIndex < len(args.Entries) && logIndex < len(rf.log) {
 		if rf.log[logIndex].Term != args.Entries[argIndex].Term {
+			rf.log = rf.log[:logIndex]
 			break
 		}
 		argIndex++
 		logIndex++
 	}
-	rf.log = append(rf.log[:logIndex], args.Entries[argIndex:]...)
+	rf.log = append(rf.log, args.Entries[argIndex:]...)
 
 	reply.Success = true
 
 	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = min(args.LeaderCommit, rf.getLastLogIndex())
+		rf.commitIndex = min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
 		go rf.applyLog()
 	}
 }
@@ -390,14 +392,15 @@ func (rf *Raft) appendEntriesAndHandleReply(server int, args *AppendEntriesArgs)
 		rf.matchIndex[server] = rf.nextIndex[server] - 1
 	} else {
 		// search for last matching conflict term in own log
+		// the 0th entry is a dummy log entry so the conflictIndex must be > 0
 		conflictIndex := rf.getLastLogIndex()
-		for conflictIndex >= 0 {
+		for conflictIndex > 0 {
 			if rf.log[conflictIndex].Term == reply.ConflictTerm {
 				break
 			}
 			conflictIndex--
 		}
-		if conflictIndex < 0 {
+		if conflictIndex <= 0 {
 			// conflict term not in own log
 			rf.nextIndex[server] = reply.ConflictIndex
 		} else {

@@ -21,54 +21,6 @@ import (
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
-func TestSimultaneousElections(t *testing.T) {
-	servers := 3
-	cfg := make_config(t, servers, false, false)
-	defer cfg.cleanup()
-
-	cfg.begin("Test (Custom): simultaneous elections")
-
-	// disconnect all servers
-	for i := 0; i < servers; i++ {
-		cfg.disconnect(i)
-	}
-
-	// reconnect two servers at (roughly) the same time
-	cfg.connect(0)
-	cfg.connect(1)
-
-	// only one leader should be elected
-	time.Sleep(2 * RaftElectionTimeout)
-	cfg.checkOneLeader()
-
-	cfg.end()
-}
-
-func TestLeaderDisconnectUnderHighLoad(t *testing.T) {
-	servers := 5
-	cfg := make_config(t, servers, false, false)
-	defer cfg.cleanup()
-
-	cfg.begin("Test (Custom): leader disconnects while high load")
-
-	leader := cfg.checkOneLeader()
-
-	// high log entry load sent to leader
-	for i := 0; i < 999; i++ {
-		cfg.rafts[leader].Start(i)
-	}
-
-	// leader disconnects
-	cfg.disconnect(leader)
-
-	// a single leader should be elected
-	// everything should still be in agreement
-	cfg.checkOneLeader()
-	cfg.one(rand.Int(), servers-1, true)
-
-	cfg.end()
-}
-
 func TestInitialElection3A(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false, false)

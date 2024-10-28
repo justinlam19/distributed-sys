@@ -24,6 +24,6 @@ go.work
 .DS_Store
 
 # discussions and time log
-**/discussion.md
+**/discussions.md
 **/time.log
 **/jl4268.yaml
