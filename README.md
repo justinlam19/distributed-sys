@@ -7,25 +7,22 @@ See the guide [here](devenv/README.md).
 
 ## Labs
  - Lab 0: introduction to Go and concurrent programming (easy)
-   - [spec](lab0/lab0.md)
    - Due 23:59 ET Wed Sep 18, 2024
  - Lab 1: microservice (moderate)
-   - [spec](lab1/lab1.md)
    - Due 23:59 ET Wed Sep 25, 2024
  - Lab 2: deployment and operations (easy)
-   - [spec](lab2/lab2.md)
    - Due 23:59 ET Fri Oct 4~~Wed Oct 2~~, 2024
  - Lab 3: Raft with static cluster membership (hard+)
    - Portion 1 (3A tests up to and **including** `TestBasicAgreement3B`) due: 23:59 ET Fri Oct 11, 2024
    - Entire lab due: 23:59 ET Wed Oct 30, 2024
  - Lab 4: Sharded key-value cache (moderate)
-   - Due
- - Lab 5: Distributed machine learning
-   - Due
- - Lab 6: Final project
-   - [Requirements and ideas **from 2023 for reference**](https://docs.google.com/document/d/1J6Do0IPsnUsrfRx7VFjwPNFUSYVBA0BZ/edit)
-   - Proposals due:
-   - Final deliverables due: (Last day of final exam; you may not be able to use the discretionary hours as per Yale College's regulations.)
+   - Due: 23:59 ET Wed Nov 6, 2024
+ - Lab 5: Final project
+   - [Requirements and ideas](https://docs.google.com/document/d/1ea5nOjGAIdlTgHnjuJ76wxU3be7anl_YvUO-7jTrWxo/edit?usp=sharing)
+   - Distributed Machine Learning is be an option with a sketched [outline](./lab-dsml/lab.md) -- you must still submit a proposal.
+   - Proposals due: 23:59 ET Wed Nov 13, 2024
+   - Final deliverables due: **17:30** ET Dec 18, 2024
+     - Last day of final exam; you cannot use the discretionary hours as per Yale College's regulations.
 
 ## Questions?
 Post to Canvas/Ed (preferred) or email the teaching staff:
