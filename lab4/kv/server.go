@@ -2,10 +2,28 @@ package kv
 
 import (
 	"context"
+	"sync"
+	"time"
 
 	"cs426.yale.edu/lab4/kv/proto"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+type cacheEntry struct {
+	value  string
+	expiry time.Time
+}
+
+func (ce cacheEntry) IsExpired() bool {
+	return time.Now().After(ce.expiry)
+}
+
+type shardCache struct {
+	mu    sync.RWMutex
+	cache map[string]cacheEntry
+}
 
 type KvServerImpl struct {
 	proto.UnimplementedKvServer
@@ -15,6 +33,10 @@ type KvServerImpl struct {
 	listener   *ShardMapListener
 	clientPool ClientPool
 	shutdown   chan struct{}
+
+	numShards     int
+	shardSet      *IntSet
+	shardCacheMap map[int]*shardCache
 }
 
 func (server *KvServerImpl) handleShardMapUpdate() {
@@ -34,6 +56,19 @@ func (server *KvServerImpl) shardMapListenLoop() {
 }
 
 func MakeKvServer(nodeName string, shardMap *ShardMap, clientPool ClientPool) *KvServerImpl {
+	numShards := shardMap.NumShards()
+	shardArray := shardMap.ShardsForNode(nodeName)
+	shardSet := NewSet()
+	for _, shard := range shardArray {
+		shardSet.Add(shard)
+	}
+
+	shardCacheMap := make(map[int]*shardCache)
+	// shards are 1-indexed
+	for i := range numShards {
+		shardCacheMap[i+1] = &shardCache{cache: make(map[string]cacheEntry)}
+	}
+
 	listener := shardMap.MakeListener()
 	server := KvServerImpl{
 		nodeName:   nodeName,
@@ -41,9 +76,14 @@ func MakeKvServer(nodeName string, shardMap *ShardMap, clientPool ClientPool) *K
 		listener:   &listener,
 		clientPool: clientPool,
 		shutdown:   make(chan struct{}),
+
+		numShards:     numShards,
+		shardSet:      shardSet,
+		shardCacheMap: shardCacheMap,
 	}
 	go server.shardMapListenLoop()
 	server.handleShardMapUpdate()
+	go server.startExpirationCleanup(800 * time.Millisecond)
 	return &server
 }
 
@@ -63,7 +103,27 @@ func (server *KvServerImpl) Get(
 		logrus.Fields{"node": server.nodeName, "key": request.Key},
 	).Trace("node received Get() request")
 
-	panic("TODO: Part A")
+	key := request.GetKey()
+	if key == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "Get() received empty key")
+	}
+	shard := GetShardForKey(key, server.numShards)
+	if !server.shardSet.Contains(shard) {
+		return nil, status.Error(codes.NotFound, "server does not host corresponding shard")
+	}
+
+	shardCache := server.shardCacheMap[shard]
+	shardCache.mu.RLock()
+	defer shardCache.mu.RUnlock()
+	value := ""
+	cacheEntry, ok := shardCache.cache[key]
+	if ok {
+		if cacheEntry.IsExpired() {
+			return &proto.GetResponse{Value: "", WasFound: false}, nil
+		}
+		value = cacheEntry.value
+	}
+	return &proto.GetResponse{Value: value, WasFound: ok}, nil
 }
 
 func (server *KvServerImpl) Set(
@@ -74,7 +134,22 @@ func (server *KvServerImpl) Set(
 		logrus.Fields{"node": server.nodeName, "key": request.Key},
 	).Trace("node received Set() request")
 
-	panic("TODO: Part A")
+	key := request.GetKey()
+	if key == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "Set() received empty key")
+	}
+	shard := GetShardForKey(key, server.numShards)
+	if !server.shardSet.Contains(shard) {
+		return nil, status.Error(codes.NotFound, "server does not host corresponding shard")
+	}
+
+	value := request.GetValue()
+	ttl := time.Duration(request.GetTtlMs()) * time.Millisecond
+	shardCache := server.shardCacheMap[shard]
+	shardCache.mu.Lock()
+	defer shardCache.mu.Unlock()
+	shardCache.cache[key] = cacheEntry{value: value, expiry: time.Now().Add(ttl)}
+	return &proto.SetResponse{}, nil
 }
 
 func (server *KvServerImpl) Delete(
@@ -85,7 +160,20 @@ func (server *KvServerImpl) Delete(
 		logrus.Fields{"node": server.nodeName, "key": request.Key},
 	).Trace("node received Delete() request")
 
-	panic("TODO: Part A")
+	key := request.GetKey()
+	if key == "" {
+		return nil, status.Error(codes.InvalidArgument, "Delete() received empty key")
+	}
+	shard := GetShardForKey(key, server.numShards)
+	if !server.shardSet.Contains(shard) {
+		return nil, status.Error(codes.NotFound, "server does not host corresponding shard")
+	}
+
+	shardCache := server.shardCacheMap[shard]
+	shardCache.mu.Lock()
+	defer shardCache.mu.Unlock()
+	delete(shardCache.cache, key)
+	return &proto.DeleteResponse{}, nil
 }
 
 func (server *KvServerImpl) GetShardContents(
@@ -93,4 +181,28 @@ func (server *KvServerImpl) GetShardContents(
 	request *proto.GetShardContentsRequest,
 ) (*proto.GetShardContentsResponse, error) {
 	panic("TODO: Part C")
+}
+
+func (server *KvServerImpl) startExpirationCleanup(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			for shard, shardCache := range server.shardCacheMap {
+				if !server.shardSet.Contains(shard) {
+					continue
+				}
+				shardCache.mu.Lock()
+				for key, entry := range shardCache.cache {
+					if entry.IsExpired() {
+						delete(shardCache.cache, key)
+					}
+				}
+				shardCache.mu.Unlock()
+			}
+		case <-server.shutdown:
+			return
+		}
+	}
 }
