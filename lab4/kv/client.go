@@ -18,7 +18,7 @@ type Kv struct {
 
 	// Add any client-side state you want here
 	numShards int
-	nodeIndex atomic.Uint64
+	nodeIndex atomic.Uint32
 }
 
 func MakeKv(shardMap *ShardMap, clientPool ClientPool) *Kv {
@@ -27,7 +27,7 @@ func MakeKv(shardMap *ShardMap, clientPool ClientPool) *Kv {
 		clientPool: clientPool,
 
 		numShards: shardMap.NumShards(),
-		nodeIndex: atomic.Uint64{},
+		nodeIndex: atomic.Uint32{},
 	}
 	// Add any initialization logic
 	return kv
@@ -51,7 +51,7 @@ func (kv *Kv) Get(ctx context.Context, key string) (string, bool, error) {
 	var response *proto.GetResponse
 	var err error
 	for untriedNodes := n_nodes; untriedNodes > 0; untriedNodes-- {
-		nodeIndex := int(kv.nodeIndex.Add(1)) % len(nodes)
+		nodeIndex := int(kv.nodeIndex.Add(1)) % n_nodes
 		kvClient, err = kv.clientPool.GetClient(nodes[nodeIndex])
 		if err != nil {
 			continue
@@ -77,7 +77,15 @@ func (kv *Kv) Set(ctx context.Context, key string, value string, ttl time.Durati
 	}
 
 	wg := &sync.WaitGroup{}
-	errCh := make(chan error, len(nodes))
+	errCh := make(chan error)
+	errs := []error{}
+	errDoneCh := make(chan struct{})
+	go func() {
+		defer close(errDoneCh)
+		for err := range errCh {
+			errs = append(errs, err)
+		}
+	}()
 	for _, node := range nodes {
 		wg.Add(1)
 		go func(node string) {
@@ -90,17 +98,12 @@ func (kv *Kv) Set(ctx context.Context, key string, value string, ttl time.Durati
 			_, err = kvClient.Set(ctx, &proto.SetRequest{Key: key, Value: value, TtlMs: ttl.Milliseconds()})
 			if err != nil {
 				errCh <- err
-				return
 			}
 		}(node)
 	}
 	wg.Wait()
 	close(errCh)
-
-	var errs []error
-	for err := range errCh {
-		errs = append(errs, err)
-	}
+	<-errDoneCh
 	if len(errs) > 0 {
 		return status.Errorf(codes.Unknown, "errors while kv.Set(): %v", errs)
 	}
@@ -120,7 +123,15 @@ func (kv *Kv) Delete(ctx context.Context, key string) error {
 	}
 
 	wg := &sync.WaitGroup{}
-	errCh := make(chan error, len(nodes))
+	errCh := make(chan error)
+	errs := []error{}
+	errDoneCh := make(chan struct{})
+	go func() {
+		defer close(errDoneCh)
+		for err := range errCh {
+			errs = append(errs, err)
+		}
+	}()
 	for _, node := range nodes {
 		wg.Add(1)
 		go func(node string) {
@@ -133,17 +144,12 @@ func (kv *Kv) Delete(ctx context.Context, key string) error {
 			_, err = kvClient.Delete(ctx, &proto.DeleteRequest{Key: key})
 			if err != nil {
 				errCh <- err
-				return
 			}
 		}(node)
 	}
 	wg.Wait()
 	close(errCh)
-
-	var errs []error
-	for err := range errCh {
-		errs = append(errs, err)
-	}
+	<-errDoneCh
 	if len(errs) > 0 {
 		return status.Errorf(codes.Unknown, "errors while kv.Delete(): %v", errs)
 	}
