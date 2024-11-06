@@ -2,8 +2,8 @@ package kv
 
 import (
 	"context"
-	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cs426.yale.edu/lab4/kv/proto"
@@ -43,6 +43,7 @@ type KvServerImpl struct {
 	numShards     int
 	globalMu      sync.RWMutex
 	shardCacheMap map[int]*shardCache
+	nodeIndex     atomic.Uint32
 }
 
 func (server *KvServerImpl) handleShardMapUpdate() {
@@ -67,7 +68,7 @@ func (server *KvServerImpl) handleShardMapUpdate() {
 	}
 	server.globalMu.RUnlock()
 
-	// update shards
+	// update shards (includes remove and add)
 	shardCacheUpdateCh := make(chan *shardCacheUpdate)
 	doneUpdating := make(chan struct{})
 	go func() {
@@ -84,7 +85,6 @@ func (server *KvServerImpl) handleShardMapUpdate() {
 			server.shardCacheMap[update.shard] = &shardCache{cache: update.cache}
 		}
 		server.globalMu.Unlock()
-
 	}()
 
 	// add shards
@@ -104,13 +104,12 @@ func (server *KvServerImpl) handleShardMapUpdate() {
 func (server *KvServerImpl) sendShardCacheUpdates(shard int, updateCh chan<- *shardCacheUpdate) {
 	nodes := server.shardMap.NodesForShard(shard)
 	n_nodes := len(nodes)
-	nodeIndex := rand.Intn(n_nodes)
 	var kvClient proto.KvClient
 	var response *proto.GetShardContentsResponse
 	var err error
 	for untriedNodes := n_nodes; untriedNodes > 0; untriedNodes-- {
-		nodeName := nodes[nodeIndex%n_nodes]
-		nodeIndex++
+		nodeIndex := int(server.nodeIndex.Add(1)) % n_nodes
+		nodeName := nodes[nodeIndex]
 		if nodeName == server.nodeName {
 			continue
 		}
@@ -164,6 +163,7 @@ func MakeKvServer(nodeName string, shardMap *ShardMap, clientPool ClientPool) *K
 		numShards:     shardMap.NumShards(),
 		shardCacheMap: make(map[int]*shardCache),
 		globalMu:      sync.RWMutex{},
+		nodeIndex:     atomic.Uint32{},
 	}
 	server.handleShardMapUpdate()
 	go server.shardMapListenLoop()
