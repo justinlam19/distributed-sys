@@ -137,10 +137,10 @@
 
 ## Week 14
 ### Tuesday, Dec 3
-- **Exam 2:** (75 minutes)
+- **Topic:** Final lecture
 
 ### Thursday, Dec 5
-- **Topic:** Final lecture
+- **Exam 2:** (75 minutes)
 
 # Finals Week
 ## Week 16
