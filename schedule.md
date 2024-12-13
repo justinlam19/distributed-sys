@@ -122,26 +122,25 @@
 - **Due:** Final project (Lab 5) proposal due
 
 ### Thursday, Nov 14
-- **Topic:** DSML 2
+- **Topic:** Distributed Computing: MapReduce/Spark
 
 ## Week 12
 ### Tuesday, Nov 19
-- **Topic:** DSML 3
+- **Topic:** DSML 2
 
 
 ### Thursday, Nov 21
-- **Topic:** TBD
+- **Topic:** DSML continued; distributed system failures and operations
 
 ## Week 13
 ### No classes - Thanksgiving Break
 
 ## Week 14
 ### Tuesday, Dec 3
-- **Exam 2:** (35-45 minutes)
-- **Topic:** Operational best practices
+- **Topic:** Final lecture
 
 ### Thursday, Dec 5
-- **Topic:** Final lecture
+- **Exam 2:** (75 minutes)
 
 # Finals Week
 ## Week 16
