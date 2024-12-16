@@ -39,6 +39,10 @@ service GPUDevice {
 
   // For the coordinator to know if a stream has completed.
   rpc GetStreamStatus(GetStreamStatusRequest) returns (GetStreamStatusResponse) {}
+
+  // New RPCs for forward and backward passes
+  rpc Forward(ForwardRequest) returns (ForwardResponse) {}
+  rpc Backward(BackwardRequest) returns (BackwardResponse) {}
 }
 
 message GetDeviceMetadataRequest {
@@ -51,7 +55,7 @@ message GetDeviceMetadataResponse {
 message BeginSendRequest {
   MemAddr sendBuffAddr = 1;
   uint64 numBytes = 2;
-  Rank dstRank = 3;
+  DeviceId dstDeviceId = 3;
 }
 
 message BeginSendResponse {
@@ -63,7 +67,8 @@ message BeginReceiveRequest {
   StreamId streamId = 1;
   MemAddr recvBuffAddr = 2;
   uint64 numBytes = 3;
-  Rank srcRank = 4;
+  DeviceId srcDeviceId = 4;
+  ReduceOp op = 5;
 }
 
 message BeginReceiveResponse {
@@ -73,6 +78,7 @@ message BeginReceiveResponse {
 message DataChunk {
   bytes data = 1;
   // You may add more fields here
+  StreamId streamId = 2;
 }
 
 message StreamSendResponse {
@@ -91,6 +97,52 @@ enum Status {
 
 message GetStreamStatusResponse {
   Status status = 1;
+}
+
+enum ForwardOp {
+  LINEAR_CROSS_ENTROPY = 0; // Perform a linear forward pass followed by cross-entropy loss computation
+}
+
+message ForwardRequest {
+  // Memory address for the input (includes a column of ones for the bias)
+  MemAddr inputAddress = 1;
+  // Size (in bytes) of the input
+  uint64 inputSize = 2;
+
+  // Memory address for the weights (includes bias)       
+  MemAddr weightAddress = 3;
+  // Size (in bytes) of the weights
+  uint64 weightSize = 4;
+
+  // Memory address for storing the output
+  MemAddr outputAddress = 5;
+  // Size (in bytes) of the output  
+  uint64 outputSize = 6;
+
+  // Type of forward operation      
+  ForwardOp forwardOp = 7;
+
+  // Array of memory addresses for gradient chunks
+  repeated MemAddr gradientAddresses = 8;
+}
+
+message ForwardResponse {
+  bool success = 1;
+  double loss = 2;
+}
+
+message BackwardRequest {
+  MemAddr weightAddress = 1;
+  uint64 weightSize = 2;
+  // Array of memory addresses for gradient chunks
+  repeated MemAddr gradientAddresses = 3;
+  uint64 gradientSize = 4;
+  // Learning rate for weight update
+  double learningRate = 5;
+}
+
+message BackwardResponse {
+  bool success = 1;
 }
 
 // A service that simulates a coordinator that manages multiple GPU devices
@@ -154,7 +206,8 @@ enum ReduceOp {
   PROD = 1;
   MIN = 2;
   MAX = 3;
-  // AVG = 4;
+  // use for distributing data; overwrite the existing data with the new
+  NOP = 4;
 }
 
 message AllReduceRingRequest {

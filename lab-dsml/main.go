@@ -92,7 +92,7 @@ func main() {
 	allReduceResponse, err := client.AllReduceRing(ctx, &pb.AllReduceRingRequest{
 		CommId:   commId,
 		Count:    uint64(calculateSizeOfData()),
-		Op:       pb.ReduceOp_PROD,
+		Op:       pb.ReduceOp_SUM,
 		MemAddrs: memAddrs,
 	})
 	if err != nil {
@@ -124,7 +124,7 @@ func main() {
 	}
 
 	var deviceId uint64
-	for device, _ := range deviceMemMap {
+	for device := range deviceMemMap {
 		deviceId = device
 		break
 	}

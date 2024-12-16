@@ -24,6 +24,8 @@ const (
 	GPUDevice_BeginReceive_FullMethodName      = "/gpu_sim.GPUDevice/BeginReceive"
 	GPUDevice_StreamSend_FullMethodName        = "/gpu_sim.GPUDevice/StreamSend"
 	GPUDevice_GetStreamStatus_FullMethodName   = "/gpu_sim.GPUDevice/GetStreamStatus"
+	GPUDevice_Forward_FullMethodName           = "/gpu_sim.GPUDevice/Forward"
+	GPUDevice_Backward_FullMethodName          = "/gpu_sim.GPUDevice/Backward"
 )
 
 // GPUDeviceClient is the client API for GPUDevice service.
@@ -42,6 +44,9 @@ type GPUDeviceClient interface {
 	StreamSend(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[DataChunk, StreamSendResponse], error)
 	// For the coordinator to know if a stream has completed.
 	GetStreamStatus(ctx context.Context, in *GetStreamStatusRequest, opts ...grpc.CallOption) (*GetStreamStatusResponse, error)
+	// New RPCs for forward and backward passes
+	Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*ForwardResponse, error)
+	Backward(ctx context.Context, in *BackwardRequest, opts ...grpc.CallOption) (*BackwardResponse, error)
 }
 
 type gPUDeviceClient struct {
@@ -105,6 +110,26 @@ func (c *gPUDeviceClient) GetStreamStatus(ctx context.Context, in *GetStreamStat
 	return out, nil
 }
 
+func (c *gPUDeviceClient) Forward(ctx context.Context, in *ForwardRequest, opts ...grpc.CallOption) (*ForwardResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ForwardResponse)
+	err := c.cc.Invoke(ctx, GPUDevice_Forward_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gPUDeviceClient) Backward(ctx context.Context, in *BackwardRequest, opts ...grpc.CallOption) (*BackwardResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BackwardResponse)
+	err := c.cc.Invoke(ctx, GPUDevice_Backward_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // GPUDeviceServer is the server API for GPUDevice service.
 // All implementations must embed UnimplementedGPUDeviceServer
 // for forward compatibility.
@@ -121,6 +146,9 @@ type GPUDeviceServer interface {
 	StreamSend(grpc.ClientStreamingServer[DataChunk, StreamSendResponse]) error
 	// For the coordinator to know if a stream has completed.
 	GetStreamStatus(context.Context, *GetStreamStatusRequest) (*GetStreamStatusResponse, error)
+	// New RPCs for forward and backward passes
+	Forward(context.Context, *ForwardRequest) (*ForwardResponse, error)
+	Backward(context.Context, *BackwardRequest) (*BackwardResponse, error)
 	mustEmbedUnimplementedGPUDeviceServer()
 }
 
@@ -145,6 +173,12 @@ func (UnimplementedGPUDeviceServer) StreamSend(grpc.ClientStreamingServer[DataCh
 }
 func (UnimplementedGPUDeviceServer) GetStreamStatus(context.Context, *GetStreamStatusRequest) (*GetStreamStatusResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetStreamStatus not implemented")
+}
+func (UnimplementedGPUDeviceServer) Forward(context.Context, *ForwardRequest) (*ForwardResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Forward not implemented")
+}
+func (UnimplementedGPUDeviceServer) Backward(context.Context, *BackwardRequest) (*BackwardResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Backward not implemented")
 }
 func (UnimplementedGPUDeviceServer) mustEmbedUnimplementedGPUDeviceServer() {}
 func (UnimplementedGPUDeviceServer) testEmbeddedByValue()                   {}
@@ -246,6 +280,42 @@ func _GPUDevice_GetStreamStatus_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GPUDevice_Forward_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ForwardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GPUDeviceServer).Forward(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GPUDevice_Forward_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GPUDeviceServer).Forward(ctx, req.(*ForwardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GPUDevice_Backward_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BackwardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GPUDeviceServer).Backward(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GPUDevice_Backward_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GPUDeviceServer).Backward(ctx, req.(*BackwardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // GPUDevice_ServiceDesc is the grpc.ServiceDesc for GPUDevice service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -268,6 +338,14 @@ var GPUDevice_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetStreamStatus",
 			Handler:    _GPUDevice_GetStreamStatus_Handler,
+		},
+		{
+			MethodName: "Forward",
+			Handler:    _GPUDevice_Forward_Handler,
+		},
+		{
+			MethodName: "Backward",
+			Handler:    _GPUDevice_Backward_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
