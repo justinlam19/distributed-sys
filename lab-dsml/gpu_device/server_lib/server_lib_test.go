@@ -18,8 +18,9 @@ func TestBeginSend(t *testing.T) {
 
 	// Prepare the request
 	req := &pb.BeginSendRequest{
-		DstDeviceId: &pb.DeviceId{Value: 2},
-		NumBytes:    100,
+		DstDeviceId:  &pb.DeviceId{Value: 2},
+		NumBytes:     100,
+		SendBuffAddr: &pb.MemAddr{Value: 1},
 	}
 
 	// Call the BeginSend method

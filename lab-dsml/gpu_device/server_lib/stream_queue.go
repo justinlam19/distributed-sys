@@ -25,6 +25,7 @@ type ConcurrentStreamInfoQueue interface {
 	Enqueue(streamInfo *StreamInfo)
 	Dequeue() *StreamInfo
 	Empty() bool
+	Size() int
 }
 
 func NewConcurrentStreamInfoQueue() ConcurrentStreamInfoQueue {
@@ -34,7 +35,7 @@ func NewConcurrentStreamInfoQueue() ConcurrentStreamInfoQueue {
 func (q *ConcurrentStreamInfoQueueImpl) Empty() bool {
 	q.mu.RLock()
 	defer q.mu.RUnlock()
-	return len(q.queue) > 0
+	return len(q.queue) == 0
 }
 
 func (q *ConcurrentStreamInfoQueueImpl) Peek() *StreamInfo {
@@ -61,4 +62,10 @@ func (q *ConcurrentStreamInfoQueueImpl) Dequeue() *StreamInfo {
 		return val
 	}
 	return nil
+}
+
+func (q *ConcurrentStreamInfoQueueImpl) Size() int {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return len(q.queue)
 }

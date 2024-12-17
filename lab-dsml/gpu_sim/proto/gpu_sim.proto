@@ -14,6 +14,13 @@ message MemAddr {
   uint64 value = 1;
 }
 
+message DeviceMemAddr {
+  DeviceId deviceId = 1;
+  MemAddr srcMemAddr = 2;
+  MemAddr dstMemAddr = 3;
+  uint64 numBytes = 4;
+}
+
 message StreamId {
   uint64 value = 1;
 }
@@ -136,7 +143,7 @@ message BackwardRequest {
   uint64 weightSize = 2;
   // Array of memory addresses for gradient chunks
   repeated MemAddr gradientAddresses = 3;
-  uint64 gradientSize = 4;
+  repeated uint64 gradientSizes = 4;
   // Learning rate for weight update
   double learningRate = 5;
 }
@@ -157,6 +164,8 @@ service GPUCoordinator {
 
   // RPCs for group or peer-to-peer communication
   rpc AllReduceRing(AllReduceRingRequest) returns (AllReduceRingResponse) {}
+  rpc ForwardBroadcast(ForwardBroadcastRequest) returns (ForwardBroadcastResponse) {}
+  rpc BackwardBroadcast(BackwardBroadcastRequest) returns (BackwardBroadcastResponse) {}
 
   // Host-to-device data transfer and vice versa
   // You may implement this as streaming as well
@@ -212,13 +221,33 @@ enum ReduceOp {
 
 message AllReduceRingRequest {
   uint64 commId = 1;
-  uint64 count = 2;
-  ReduceOp op = 3;
-  // Rank -> MemAddr; protobuf doesn't support message type keys or type aliases
-  map<uint32, MemAddr> memAddrs = 4;
+  ReduceOp op = 2;
+  repeated DeviceMemAddr reduceDeviceMemAddrs = 3;
+  repeated DeviceMemAddr gatherDeviceMemAddrs = 4;
 }
 
 message AllReduceRingResponse {
+  bool success = 1;
+}
+
+message ForwardBroadcastRequest {
+  uint64 commId = 1;
+  // DeviceId -> ForwardRequest; protobuf doesn't support message type keys or type aliases
+  map<uint64, ForwardRequest> forwardRequests = 2;
+}
+
+message ForwardBroadcastResponse {
+  bool success = 1;
+  double loss = 2;
+}
+
+message BackwardBroadcastRequest {
+  uint64 commId = 1;
+  // DeviceId -> BackwardRequest; protobuf doesn't support message type keys or type aliases
+  map<uint64, BackwardRequest> backwardRequests = 2;
+}
+
+message BackwardBroadcastResponse {
   bool success = 1;
 }
 

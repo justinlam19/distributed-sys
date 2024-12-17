@@ -1,4 +1,4 @@
-package server_lib
+package utils
 
 import (
 	"testing"

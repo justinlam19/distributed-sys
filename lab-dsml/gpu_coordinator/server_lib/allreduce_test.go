@@ -22,60 +22,56 @@ func TestApplyOpToRing_Success(t *testing.T) {
 	mockClient1.On("BeginSend", mock.Anything, mock.Anything).Return(
 		&pb.BeginSendResponse{Initiated: true, StreamId: &pb.StreamId{Value: 123}},
 		nil,
-	).Times(2)
+	)
 	mockClient1.On("BeginReceive", mock.Anything, mock.Anything).Return(
 		&pb.BeginReceiveResponse{Initiated: true},
 		nil,
-	).Times(2)
+	)
 
 	mockClient2.On("BeginSend", mock.Anything, mock.Anything).Return(
 		&pb.BeginSendResponse{Initiated: true, StreamId: &pb.StreamId{Value: 123}},
 		nil,
-	).Times(2)
+	)
 	mockClient2.On("BeginReceive", mock.Anything, mock.Anything).Return(
 		&pb.BeginReceiveResponse{Initiated: true},
 		nil,
-	).Times(2)
+	)
 
 	mockClient3.On("BeginSend", mock.Anything, mock.Anything).Return(
 		&pb.BeginSendResponse{Initiated: true, StreamId: &pb.StreamId{Value: 123}},
 		nil,
-	).Times(2)
+	)
 	mockClient3.On("BeginReceive", mock.Anything, mock.Anything).Return(
 		&pb.BeginReceiveResponse{Initiated: true},
 		nil,
-	).Times(2)
+	)
+
+	// Define test parameters
+	op := pb.ReduceOp_SUM
+	commId := uint64(1)
 
 	// Set up device clients information
-	deviceClientsInfo := []*GPUDeviceClientInfo{
-		{DeviceId: 1, Client: mockClient1, StreamIds: make(map[uint64][]uint64)},
-		{DeviceId: 2, Client: mockClient2, StreamIds: make(map[uint64][]uint64)},
-		{DeviceId: 3, Client: mockClient3, StreamIds: make(map[uint64][]uint64)},
+	deviceClientsInfo := map[uint64]*GPUDeviceClientInfo{
+		0: {DeviceId: 0, Client: mockClient1, StreamIds: map[uint64][]uint64{commId: {}}},
+		1: {DeviceId: 1, Client: mockClient2, StreamIds: map[uint64][]uint64{commId: {}}},
+		2: {DeviceId: 2, Client: mockClient3, StreamIds: map[uint64][]uint64{commId: {}}},
 	}
 
 	// Define memory addresses for communication
-	// 0 -> 1 -> 2 -> 3
-	// 3 -> 4 -> 5 -> 0
-	memAddrs := map[uint32]*pb.MemAddr{
-		0: {Value: 0},  // 0->1 using address 0 for both
-		1: {Value: 8},  // 1->2 using address 8 for both
-		2: {Value: 16}, // 2->3 using address 16 for both
-		3: {Value: 24},
-		4: {Value: 32},
-		5: {Value: 40},
+	deviceMemAddrs := []*pb.DeviceMemAddr{
+		{DeviceId: &pb.DeviceId{Value: 0}, SrcMemAddr: &pb.MemAddr{Value: 0}, DstMemAddr: &pb.MemAddr{Value: 1}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 1}, SrcMemAddr: &pb.MemAddr{Value: 8}, DstMemAddr: &pb.MemAddr{Value: 2}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 2}, SrcMemAddr: &pb.MemAddr{Value: 16}, DstMemAddr: &pb.MemAddr{Value: 3}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 0}, SrcMemAddr: &pb.MemAddr{Value: 24}, DstMemAddr: &pb.MemAddr{Value: 4}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 1}, SrcMemAddr: &pb.MemAddr{Value: 32}, DstMemAddr: &pb.MemAddr{Value: 5}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 2}, SrcMemAddr: &pb.MemAddr{Value: 40}, DstMemAddr: &pb.MemAddr{Value: 6}, NumBytes: 10},
 	}
 
 	// Create the service
 	service := &GPUCoordinatorService{}
 
-	// Define test parameters
-	op := pb.ReduceOp_SUM
-	commId := uint64(1)
-	numBytes := uint64(10)
-	numDevices := uint32(3)
-
 	// Call the method
-	err := service.applyOpToRing(context.Background(), op, commId, numBytes, numDevices, memAddrs, deviceClientsInfo)
+	err := service.applyOpToRing(context.Background(), op, commId, deviceMemAddrs, deviceClientsInfo)
 
 	// Assertions
 	assert.Nil(t, err)
@@ -101,34 +97,32 @@ func TestApplyOpToRing_BeginSendError(t *testing.T) {
 	mockClient3.On("BeginSend", mock.Anything, mock.Anything).Return(&pb.BeginSendResponse{Initiated: true, StreamId: &pb.StreamId{Value: 123}}, nil).Maybe()
 	mockClient3.On("BeginReceive", mock.Anything, mock.Anything).Return(&pb.BeginReceiveResponse{Initiated: true}, nil).Maybe()
 
+	// Define test parameters
+	op := pb.ReduceOp_SUM
+	commId := uint64(1)
+
 	// Set up device clients information
-	deviceClientsInfo := []*GPUDeviceClientInfo{
-		{DeviceId: 1, Client: mockClient1, StreamIds: make(map[uint64][]uint64)},
-		{DeviceId: 2, Client: mockClient2, StreamIds: make(map[uint64][]uint64)},
-		{DeviceId: 3, Client: mockClient3, StreamIds: make(map[uint64][]uint64)},
+	deviceClientsInfo := map[uint64]*GPUDeviceClientInfo{
+		0: {DeviceId: 0, Client: mockClient1, StreamIds: map[uint64][]uint64{commId: {}}},
+		1: {DeviceId: 1, Client: mockClient2, StreamIds: map[uint64][]uint64{commId: {}}},
+		2: {DeviceId: 2, Client: mockClient3, StreamIds: map[uint64][]uint64{commId: {}}},
 	}
 
 	// Define memory addresses for communication
-	memAddrs := map[uint32]*pb.MemAddr{
-		0: {Value: 0},
-		1: {Value: 100},
-		2: {Value: 9},
-		3: {Value: 5},
-		4: {Value: 105},
-		5: {Value: 14},
+	deviceMemAddrs := []*pb.DeviceMemAddr{
+		{DeviceId: &pb.DeviceId{Value: 0}, SrcMemAddr: &pb.MemAddr{Value: 0}, DstMemAddr: &pb.MemAddr{Value: 1}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 1}, SrcMemAddr: &pb.MemAddr{Value: 8}, DstMemAddr: &pb.MemAddr{Value: 2}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 2}, SrcMemAddr: &pb.MemAddr{Value: 16}, DstMemAddr: &pb.MemAddr{Value: 3}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 0}, SrcMemAddr: &pb.MemAddr{Value: 24}, DstMemAddr: &pb.MemAddr{Value: 4}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 1}, SrcMemAddr: &pb.MemAddr{Value: 32}, DstMemAddr: &pb.MemAddr{Value: 5}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 2}, SrcMemAddr: &pb.MemAddr{Value: 40}, DstMemAddr: &pb.MemAddr{Value: 6}, NumBytes: 10},
 	}
 
 	// Create the service
 	service := &GPUCoordinatorService{}
 
-	// Define test parameters
-	op := pb.ReduceOp_SUM
-	commId := uint64(1)
-	numBytes := uint64(10)
-	numDevices := uint32(3)
-
 	// Call the method
-	err := service.applyOpToRing(context.Background(), op, commId, numBytes, numDevices, memAddrs, deviceClientsInfo)
+	err := service.applyOpToRing(context.Background(), op, commId, deviceMemAddrs, deviceClientsInfo)
 
 	// Assertions
 	assert.NotNil(t, err)
@@ -155,34 +149,33 @@ func TestApplyOpToRing_BeginReceiveError(t *testing.T) {
 	mockClient3.On("BeginSend", mock.Anything, mock.Anything).Return(&pb.BeginSendResponse{Initiated: true, StreamId: &pb.StreamId{Value: 123}}, nil).Maybe()
 	mockClient3.On("BeginReceive", mock.Anything, mock.Anything).Return(&pb.BeginReceiveResponse{Initiated: true}, nil).Maybe()
 
+	// Define test parameters
+	op := pb.ReduceOp_SUM
+	commId := uint64(1)
+
 	// Set up device clients information
-	deviceClientsInfo := []*GPUDeviceClientInfo{
-		{DeviceId: 1, Client: mockClient1, StreamIds: make(map[uint64][]uint64)},
-		{DeviceId: 2, Client: mockClient2, StreamIds: make(map[uint64][]uint64)},
-		{DeviceId: 3, Client: mockClient3, StreamIds: make(map[uint64][]uint64)},
+	deviceClientsInfo := map[uint64]*GPUDeviceClientInfo{
+		0: {DeviceId: 0, Client: mockClient1, StreamIds: map[uint64][]uint64{commId: {}}},
+		1: {DeviceId: 1, Client: mockClient2, StreamIds: map[uint64][]uint64{commId: {}}},
+		2: {DeviceId: 2, Client: mockClient3, StreamIds: map[uint64][]uint64{commId: {}}},
 	}
 
 	// Define memory addresses for communication
-	memAddrs := map[uint32]*pb.MemAddr{
-		0: {Value: 0},
-		1: {Value: 100},
-		2: {Value: 9},
-		3: {Value: 5},
-		4: {Value: 105},
-		5: {Value: 14},
+	// 0 -> 1 -> 2 -> 0
+	deviceMemAddrs := []*pb.DeviceMemAddr{
+		{DeviceId: &pb.DeviceId{Value: 0}, SrcMemAddr: &pb.MemAddr{Value: 0}, DstMemAddr: &pb.MemAddr{Value: 1}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 1}, SrcMemAddr: &pb.MemAddr{Value: 8}, DstMemAddr: &pb.MemAddr{Value: 2}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 2}, SrcMemAddr: &pb.MemAddr{Value: 16}, DstMemAddr: &pb.MemAddr{Value: 3}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 0}, SrcMemAddr: &pb.MemAddr{Value: 24}, DstMemAddr: &pb.MemAddr{Value: 4}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 1}, SrcMemAddr: &pb.MemAddr{Value: 32}, DstMemAddr: &pb.MemAddr{Value: 5}, NumBytes: 10},
+		{DeviceId: &pb.DeviceId{Value: 2}, SrcMemAddr: &pb.MemAddr{Value: 40}, DstMemAddr: &pb.MemAddr{Value: 6}, NumBytes: 10},
 	}
 
 	// Create the service
 	service := &GPUCoordinatorService{}
 
-	// Define test parameters
-	op := pb.ReduceOp_SUM
-	commId := uint64(1)
-	numBytes := uint64(10)
-	numDevices := uint32(3)
-
 	// Call the method
-	err := service.applyOpToRing(context.Background(), op, commId, numBytes, numDevices, memAddrs, deviceClientsInfo)
+	err := service.applyOpToRing(context.Background(), op, commId, deviceMemAddrs, deviceClientsInfo)
 
 	// Assertions
 	assert.NotNil(t, err)

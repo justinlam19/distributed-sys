@@ -359,12 +359,14 @@ var GPUDevice_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	GPUCoordinator_CommInit_FullMethodName      = "/gpu_sim.GPUCoordinator/CommInit"
-	GPUCoordinator_GetCommStatus_FullMethodName = "/gpu_sim.GPUCoordinator/GetCommStatus"
-	GPUCoordinator_GroupStart_FullMethodName    = "/gpu_sim.GPUCoordinator/GroupStart"
-	GPUCoordinator_GroupEnd_FullMethodName      = "/gpu_sim.GPUCoordinator/GroupEnd"
-	GPUCoordinator_AllReduceRing_FullMethodName = "/gpu_sim.GPUCoordinator/AllReduceRing"
-	GPUCoordinator_Memcpy_FullMethodName        = "/gpu_sim.GPUCoordinator/Memcpy"
+	GPUCoordinator_CommInit_FullMethodName          = "/gpu_sim.GPUCoordinator/CommInit"
+	GPUCoordinator_GetCommStatus_FullMethodName     = "/gpu_sim.GPUCoordinator/GetCommStatus"
+	GPUCoordinator_GroupStart_FullMethodName        = "/gpu_sim.GPUCoordinator/GroupStart"
+	GPUCoordinator_GroupEnd_FullMethodName          = "/gpu_sim.GPUCoordinator/GroupEnd"
+	GPUCoordinator_AllReduceRing_FullMethodName     = "/gpu_sim.GPUCoordinator/AllReduceRing"
+	GPUCoordinator_ForwardBroadcast_FullMethodName  = "/gpu_sim.GPUCoordinator/ForwardBroadcast"
+	GPUCoordinator_BackwardBroadcast_FullMethodName = "/gpu_sim.GPUCoordinator/BackwardBroadcast"
+	GPUCoordinator_Memcpy_FullMethodName            = "/gpu_sim.GPUCoordinator/Memcpy"
 )
 
 // GPUCoordinatorClient is the client API for GPUCoordinator service.
@@ -380,6 +382,8 @@ type GPUCoordinatorClient interface {
 	GroupEnd(ctx context.Context, in *GroupEndRequest, opts ...grpc.CallOption) (*GroupEndResponse, error)
 	// RPCs for group or peer-to-peer communication
 	AllReduceRing(ctx context.Context, in *AllReduceRingRequest, opts ...grpc.CallOption) (*AllReduceRingResponse, error)
+	ForwardBroadcast(ctx context.Context, in *ForwardBroadcastRequest, opts ...grpc.CallOption) (*ForwardBroadcastResponse, error)
+	BackwardBroadcast(ctx context.Context, in *BackwardBroadcastRequest, opts ...grpc.CallOption) (*BackwardBroadcastResponse, error)
 	// Host-to-device data transfer and vice versa
 	// You may implement this as streaming as well
 	Memcpy(ctx context.Context, in *MemcpyRequest, opts ...grpc.CallOption) (*MemcpyResponse, error)
@@ -443,6 +447,26 @@ func (c *gPUCoordinatorClient) AllReduceRing(ctx context.Context, in *AllReduceR
 	return out, nil
 }
 
+func (c *gPUCoordinatorClient) ForwardBroadcast(ctx context.Context, in *ForwardBroadcastRequest, opts ...grpc.CallOption) (*ForwardBroadcastResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ForwardBroadcastResponse)
+	err := c.cc.Invoke(ctx, GPUCoordinator_ForwardBroadcast_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *gPUCoordinatorClient) BackwardBroadcast(ctx context.Context, in *BackwardBroadcastRequest, opts ...grpc.CallOption) (*BackwardBroadcastResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BackwardBroadcastResponse)
+	err := c.cc.Invoke(ctx, GPUCoordinator_BackwardBroadcast_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *gPUCoordinatorClient) Memcpy(ctx context.Context, in *MemcpyRequest, opts ...grpc.CallOption) (*MemcpyResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MemcpyResponse)
@@ -466,6 +490,8 @@ type GPUCoordinatorServer interface {
 	GroupEnd(context.Context, *GroupEndRequest) (*GroupEndResponse, error)
 	// RPCs for group or peer-to-peer communication
 	AllReduceRing(context.Context, *AllReduceRingRequest) (*AllReduceRingResponse, error)
+	ForwardBroadcast(context.Context, *ForwardBroadcastRequest) (*ForwardBroadcastResponse, error)
+	BackwardBroadcast(context.Context, *BackwardBroadcastRequest) (*BackwardBroadcastResponse, error)
 	// Host-to-device data transfer and vice versa
 	// You may implement this as streaming as well
 	Memcpy(context.Context, *MemcpyRequest) (*MemcpyResponse, error)
@@ -493,6 +519,12 @@ func (UnimplementedGPUCoordinatorServer) GroupEnd(context.Context, *GroupEndRequ
 }
 func (UnimplementedGPUCoordinatorServer) AllReduceRing(context.Context, *AllReduceRingRequest) (*AllReduceRingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AllReduceRing not implemented")
+}
+func (UnimplementedGPUCoordinatorServer) ForwardBroadcast(context.Context, *ForwardBroadcastRequest) (*ForwardBroadcastResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ForwardBroadcast not implemented")
+}
+func (UnimplementedGPUCoordinatorServer) BackwardBroadcast(context.Context, *BackwardBroadcastRequest) (*BackwardBroadcastResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BackwardBroadcast not implemented")
 }
 func (UnimplementedGPUCoordinatorServer) Memcpy(context.Context, *MemcpyRequest) (*MemcpyResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Memcpy not implemented")
@@ -608,6 +640,42 @@ func _GPUCoordinator_AllReduceRing_Handler(srv interface{}, ctx context.Context,
 	return interceptor(ctx, in, info, handler)
 }
 
+func _GPUCoordinator_ForwardBroadcast_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ForwardBroadcastRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GPUCoordinatorServer).ForwardBroadcast(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GPUCoordinator_ForwardBroadcast_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GPUCoordinatorServer).ForwardBroadcast(ctx, req.(*ForwardBroadcastRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _GPUCoordinator_BackwardBroadcast_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BackwardBroadcastRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(GPUCoordinatorServer).BackwardBroadcast(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: GPUCoordinator_BackwardBroadcast_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(GPUCoordinatorServer).BackwardBroadcast(ctx, req.(*BackwardBroadcastRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _GPUCoordinator_Memcpy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(MemcpyRequest)
 	if err := dec(in); err != nil {
@@ -652,6 +720,14 @@ var GPUCoordinator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "AllReduceRing",
 			Handler:    _GPUCoordinator_AllReduceRing_Handler,
+		},
+		{
+			MethodName: "ForwardBroadcast",
+			Handler:    _GPUCoordinator_ForwardBroadcast_Handler,
+		},
+		{
+			MethodName: "BackwardBroadcast",
+			Handler:    _GPUCoordinator_BackwardBroadcast_Handler,
 		},
 		{
 			MethodName: "Memcpy",

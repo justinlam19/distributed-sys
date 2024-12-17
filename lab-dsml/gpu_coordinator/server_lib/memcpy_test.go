@@ -3,6 +3,7 @@ package server_lib
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,7 +28,7 @@ func TestMemcpy_DeviceToHost_Success(t *testing.T) {
 	// Set up the device config with the temporary file path
 	coordinator := &GPUCoordinatorService{
 		config: map[uint64]*gpu.GPUDeviceConfig{
-			deviceId: {MemoryFilePath: tmpFile.Name()},
+			deviceId: {MemoryFilePath: tmpFile.Name(), Address: "[::-1]8080", MemoryLock: &sync.RWMutex{}},
 		},
 	}
 
@@ -102,7 +103,7 @@ func TestMemcpy_DeviceToHost_FileOpenError(t *testing.T) {
 	// Set up the service with an invalid path
 	coordinator := &GPUCoordinatorService{
 		config: map[uint64]*gpu.GPUDeviceConfig{
-			0: {MemoryFilePath: "/fake/path"},
+			0: {MemoryFilePath: "/fake/path", Address: "[::-1]8080", MemoryLock: &sync.RWMutex{}},
 		},
 	}
 
@@ -132,7 +133,7 @@ func TestMemcpy_HostToDevice_Success(t *testing.T) {
 	// Set up the device config with the temporary file path
 	coordinator := &GPUCoordinatorService{
 		config: map[uint64]*gpu.GPUDeviceConfig{
-			0: {MemoryFilePath: tmpFile.Name()},
+			0: {MemoryFilePath: tmpFile.Name(), Address: "[::-1]8080", MemoryLock: &sync.RWMutex{}},
 		},
 	}
 

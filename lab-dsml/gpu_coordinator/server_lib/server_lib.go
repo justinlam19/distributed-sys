@@ -28,7 +28,7 @@ type GPUCoordinatorService struct {
 	deviceIds           []uint64
 	deviceCounter       uint64
 	commIDCounter       uint64
-	commDeviceClientMap map[uint64][]*GPUDeviceClientInfo
+	commDeviceClientMap map[uint64]map[uint64]*GPUDeviceClientInfo
 }
 
 func NewGPUCoordinatorService(config map[uint64]*gpu.GPUDeviceConfig) *GPUCoordinatorService {
@@ -41,7 +41,7 @@ func NewGPUCoordinatorService(config map[uint64]*gpu.GPUDeviceConfig) *GPUCoordi
 		deviceIds:           deviceIds,
 		deviceCounter:       uint64(rand.Intn(len(config))),
 		commIDCounter:       0,
-		commDeviceClientMap: make(map[uint64][]*GPUDeviceClientInfo),
+		commDeviceClientMap: make(map[uint64]map[uint64]*GPUDeviceClientInfo),
 	}
 }
 
@@ -58,7 +58,7 @@ func (s *GPUCoordinatorService) CommInit(ctx context.Context, req *pb.CommInitRe
 	s.commIDCounter++
 
 	var devices []*pb.DeviceMetadata
-	var deviceClientsInfo []*GPUDeviceClientInfo
+	deviceClientsInfo := make(map[uint64]*GPUDeviceClientInfo)
 	for range numDevices {
 		// choose device by round robin (deviceCounter is randomly initialized)
 		deviceIndex := s.deviceCounter % uint64(len(s.deviceIds))
@@ -76,8 +76,8 @@ func (s *GPUCoordinatorService) CommInit(ctx context.Context, req *pb.CommInitRe
 		}
 
 		gpuDeviceClient := pb.NewGPUDeviceClient(deviceConn)
-		clientInfo := &GPUDeviceClientInfo{DeviceId: deviceId, Client: gpuDeviceClient}
-		deviceClientsInfo = append(deviceClientsInfo, clientInfo)
+		clientInfo := &GPUDeviceClientInfo{DeviceId: deviceId, Client: gpuDeviceClient, StreamIds: make(map[uint64][]uint64)}
+		deviceClientsInfo[deviceId] = clientInfo
 		metadataResponse, err := gpuDeviceClient.GetDeviceMetadata(ctx, &pb.GetDeviceMetadataRequest{})
 		if err != nil {
 			return &pb.CommInitResponse{
@@ -147,35 +147,41 @@ func (s *GPUCoordinatorService) GroupEnd(ctx context.Context, req *pb.GroupEndRe
 }
 
 func (s *GPUCoordinatorService) AllReduceRing(ctx context.Context, req *pb.AllReduceRingRequest) (*pb.AllReduceRingResponse, error) {
-	commId := req.GetCommId()
+	if req == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "nil request")
+	}
+
+	commId := req.CommId
 	deviceClientsInfo, ok := s.commDeviceClientMap[commId]
 	if !ok {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid commId %v", commId)
 	}
-	memAddrs := req.GetMemAddrs()
-	if memAddrs == nil {
-		return nil, status.Errorf(codes.InvalidArgument, "memory addresses cannot be nil")
+
+	numDevices := uint32(len(deviceClientsInfo))
+	reduceDeviceMemAddrs := req.ReduceDeviceMemAddrs
+	if len(reduceDeviceMemAddrs) != int(numDevices*(numDevices-1)) {
+		return nil, status.Errorf(codes.InvalidArgument, "the number of memory addresses does not match the number of expected communications")
 	}
 
-	numDevices := uint32(len(s.commDeviceClientMap[commId]))
-	if len(memAddrs) != int(numDevices*(numDevices-1)) {
-		return nil, status.Errorf(codes.InvalidArgument, "the number of memory addresses does not match the number of devices")
-	}
-
-	op := req.GetOp()
-	numBytes := uint64(req.GetCount())
+	op := req.Op
 
 	// Reduce for numDevices-1 rounds
 	// #ranks = numDevices * (numDevices - 1)
 	// each round, each device will send to the next device
-	err := s.applyOpToRing(ctx, op, commId, numBytes, numDevices, memAddrs, deviceClientsInfo)
+	err := s.applyOpToRing(ctx, op, commId, reduceDeviceMemAddrs, deviceClientsInfo)
 	if err != nil {
-		return &pb.AllReduceRingResponse{Success: false}, err
+		return &pb.AllReduceRingResponse{Success: false}, status.Errorf(codes.Unknown, "failed all reduce ring in reduce stage")
 	}
 
 	// gather for numDevices-1 rounds
 	// NOP causes the receiving device to replace the original chunk with the new
-	err = s.applyOpToRing(ctx, pb.ReduceOp_NOP, commId, numBytes, numDevices, memAddrs, deviceClientsInfo)
+	// gather addresses are different because the address starting chunk that a device sends in reduce
+	//  is not the same as the address of the chunk it ends up having a complete version
+	gatherDeviceMemAddrs := req.GatherDeviceMemAddrs
+	if len(reduceDeviceMemAddrs) != int(numDevices*(numDevices-1)) {
+		return nil, status.Errorf(codes.InvalidArgument, "the number of memory addresses does not match the number of expected communications")
+	}
+	err = s.applyOpToRing(ctx, pb.ReduceOp_NOP, commId, gatherDeviceMemAddrs, deviceClientsInfo)
 	if err != nil {
 		return &pb.AllReduceRingResponse{Success: false}, err
 	}
@@ -187,22 +193,21 @@ func (s *GPUCoordinatorService) applyOpToRing(
 	ctx context.Context,
 	op pb.ReduceOp,
 	commId uint64,
-	numBytes uint64,
-	numDevices uint32,
-	memAddrs map[uint32]*pb.MemAddr,
-	deviceClientsInfo []*GPUDeviceClientInfo,
+	deviceMemAddrs []*pb.DeviceMemAddr,
+	deviceClientsInfo map[uint64]*GPUDeviceClientInfo,
 ) error {
-	for rank, memAddr := range memAddrs {
-		thisRank := rank % numDevices           // there are multiple ranks because each corresponds to a single communication
-		nextRank := (thisRank + 1) % numDevices // next in ring
-		srcDevice := deviceClientsInfo[thisRank]
-		dstDevice := deviceClientsInfo[nextRank]
+	for thisRank, deviceMemAddr := range deviceMemAddrs {
+		nextRank := (thisRank + 1) % len(deviceMemAddrs) // next in ring
+		thisDeviceId := deviceMemAddr.DeviceId.Value
+		nextDeviceId := deviceMemAddrs[nextRank].DeviceId.Value
+		srcDevice := deviceClientsInfo[thisDeviceId]
+		dstDevice := deviceClientsInfo[nextDeviceId]
 
 		// beginSend
 		beginSendResponse, err := srcDevice.Client.BeginSend(ctx, &pb.BeginSendRequest{
-			SendBuffAddr: memAddr,
-			NumBytes:     numBytes,
-			DstDeviceId:  &pb.DeviceId{Value: dstDevice.DeviceId},
+			SendBuffAddr: deviceMemAddr.SrcMemAddr,
+			NumBytes:     deviceMemAddr.NumBytes,
+			DstDeviceId:  &pb.DeviceId{Value: nextDeviceId},
 		})
 		if err != nil {
 			return status.Errorf(codes.Unavailable, "failed begin send for rank %v to %v: %v", thisRank, nextRank, err)
@@ -223,9 +228,9 @@ func (s *GPUCoordinatorService) applyOpToRing(
 		// beginReceive
 		beginReceiveResponse, err := dstDevice.Client.BeginReceive(ctx, &pb.BeginReceiveRequest{
 			StreamId:     streamId,
-			RecvBuffAddr: memAddr,
-			NumBytes:     numBytes,
-			SrcDeviceId:  &pb.DeviceId{Value: srcDevice.DeviceId},
+			RecvBuffAddr: deviceMemAddr.DstMemAddr,
+			NumBytes:     deviceMemAddr.NumBytes,
+			SrcDeviceId:  &pb.DeviceId{Value: thisDeviceId},
 			Op:           op,
 		})
 		if err != nil {
@@ -236,6 +241,54 @@ func (s *GPUCoordinatorService) applyOpToRing(
 		}
 	}
 	return nil
+}
+
+func (s *GPUCoordinatorService) ForwardBroadcast(ctx context.Context, req *pb.ForwardBroadcastRequest) (*pb.ForwardBroadcastResponse, error) {
+	if req == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "nil request")
+	}
+	commId := req.CommId
+	deviceClientsInfo, ok := s.commDeviceClientMap[commId]
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid commId %v", commId)
+	}
+	numDevices := uint32(len(deviceClientsInfo))
+	loss := float64(0)
+	for deviceId, forwardRequest := range req.ForwardRequests {
+		device := deviceClientsInfo[deviceId]
+		forwardResponse, err := device.Client.Forward(ctx, forwardRequest)
+		if err != nil {
+			return &pb.ForwardBroadcastResponse{Success: false}, status.Errorf(codes.Internal, "forward pass for gpu %v failed: %v", deviceId, err)
+		}
+		if !forwardResponse.Success {
+			return &pb.ForwardBroadcastResponse{Success: false}, status.Errorf(codes.Internal, "forward pass for gpu %v failed", deviceId)
+		}
+		loss += forwardResponse.Loss
+	}
+	loss /= float64(numDevices)
+	return &pb.ForwardBroadcastResponse{Success: true, Loss: loss}, nil
+}
+
+func (s *GPUCoordinatorService) BackwardBroadcast(ctx context.Context, req *pb.BackwardBroadcastRequest) (*pb.BackwardBroadcastResponse, error) {
+	if req == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "nil request")
+	}
+	commId := req.CommId
+	deviceClientsInfo, ok := s.commDeviceClientMap[commId]
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid commId %v", commId)
+	}
+	for deviceId, backwardRequest := range req.BackwardRequests {
+		device := deviceClientsInfo[deviceId]
+		backwardResponse, err := device.Client.Backward(ctx, backwardRequest)
+		if err != nil {
+			return &pb.BackwardBroadcastResponse{Success: false}, status.Errorf(codes.Internal, "backward pass for gpu %v failed: %v", deviceId, err)
+		}
+		if !backwardResponse.Success {
+			return &pb.BackwardBroadcastResponse{Success: false}, status.Errorf(codes.Internal, "backward pass for gpu %v failed", deviceId)
+		}
+	}
+	return &pb.BackwardBroadcastResponse{Success: true}, nil
 }
 
 func (s *GPUCoordinatorService) Memcpy(ctx context.Context, req *pb.MemcpyRequest) (*pb.MemcpyResponse, error) {
@@ -256,6 +309,8 @@ func (s *GPUCoordinatorService) Memcpy(ctx context.Context, req *pb.MemcpyReques
 			return nil, status.Errorf(codes.InvalidArgument, "no device %v in config", deviceId)
 		}
 
+		device.MemoryLock.RLock()
+		defer device.MemoryLock.RUnlock()
 		deviceFilePath := device.MemoryFilePath
 		deviceFile, err := os.Open(deviceFilePath)
 		if err != nil {
@@ -297,6 +352,8 @@ func (s *GPUCoordinatorService) Memcpy(ctx context.Context, req *pb.MemcpyReques
 			},
 		}
 
+		device.MemoryLock.Lock()
+		defer device.MemoryLock.Unlock()
 		deviceFilePath := device.MemoryFilePath
 		deviceFile, err := os.OpenFile(deviceFilePath, os.O_WRONLY, 0666)
 		if err != nil {

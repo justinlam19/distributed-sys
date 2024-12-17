@@ -1,0 +1,21 @@
+{
+    "devices": {
+        "0": {
+            "address": "[::1]:8081",
+            "memory_file_path": "memory/gpu0_memory.dat"
+        },
+        "1": {
+            "address": "[::1]:8082",
+            "memory_file_path": "memory/gpu1_memory.dat"
+        },
+        "2": {
+            "address": "[::1]:8083",
+            "memory_file_path": "memory/gpu2_memory.dat"
+        },
+        "3": {
+            "address": "[::1]:8084",
+            "memory_file_path": "memory/gpu3_memory.dat"
+        }
+    },
+    "coordinator_address": "[::1]:8080"
+}

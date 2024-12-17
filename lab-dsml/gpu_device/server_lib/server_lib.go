@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "cs426.yale.edu/lab-dsml/gpu_sim/proto"
+	utils "cs426.yale.edu/lab-dsml/utils"
 	"gonum.org/v1/gonum/mat"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -17,8 +18,9 @@ import (
 )
 
 type GPUDeviceConfig struct {
-	Address        string
-	MemoryFilePath string
+	Address        string        `json:"address"`
+	MemoryFilePath string        `json:"memory_file_path"`
+	MemoryLock     *sync.RWMutex `json:"-"`
 }
 
 type GPUDeviceService struct {
@@ -28,6 +30,7 @@ type GPUDeviceService struct {
 	MemoryFilePath string
 	MinAddr        uint64
 	MaxAddr        uint64
+	MemoryLock     *sync.RWMutex
 	Config         map[uint64]*GPUDeviceConfig
 
 	StreamIdCounter atomic.Uint64
@@ -48,6 +51,7 @@ func NewGPUDeviceService(config map[uint64]*GPUDeviceConfig, id uint64, minAddr 
 		Id:              id,
 		Address:         config[id].Address,
 		MemoryFilePath:  config[id].MemoryFilePath,
+		MemoryLock:      config[id].MemoryLock,
 		MinAddr:         minAddr,
 		MaxAddr:         maxAddr,
 		Config:          config,
@@ -86,7 +90,7 @@ func (s *GPUDeviceService) BeginSend(ctx context.Context, req *pb.BeginSendReque
 	s.SendStreamQueue.Enqueue(&StreamInfo{
 		StreamId: streamId,
 		Op:       pb.ReduceOp_NOP, // doesn't matter because this won't be used
-		MemAddr:  req.NumBytes,
+		MemAddr:  req.SendBuffAddr.Value,
 		NumBytes: req.NumBytes,
 		SrcId:    s.Id,
 		DstId:    req.DstDeviceId.Value,
@@ -135,7 +139,7 @@ func (s *GPUDeviceService) repeatSend() {
 				s.StreamStatusLock.Lock()
 				if err != nil {
 					s.StreamStatuses[streamId] = pb.Status_FAILED
-				} else {
+				} else if s.StreamStatuses[streamId] != pb.Status_FAILED {
 					s.StreamStatuses[streamId] = pb.Status_SUCCESS
 				}
 				s.StreamStatusLock.Unlock()
@@ -147,17 +151,22 @@ func (s *GPUDeviceService) repeatSend() {
 func (s *GPUDeviceService) handleSend(streamInfo *StreamInfo) error {
 	memAddr := streamInfo.MemAddr
 	numBytes := streamInfo.NumBytes
-	deviceFilePath := s.MemoryFilePath
-	deviceFile, err := os.Open(deviceFilePath)
+
+	s.MemoryLock.RLock()
+	memoryFilePath := s.MemoryFilePath
+	memoryFile, err := os.Open(memoryFilePath)
 	if err != nil {
+		s.MemoryLock.RUnlock()
 		return err
 	}
-	defer deviceFile.Close()
-
-	buffer, err := readFile(deviceFile, memAddr, numBytes)
+	buffer, err := readFile(memoryFile, memAddr, numBytes)
 	if err != nil {
-		return status.Errorf(codes.Unavailable, "failed to read file %v: %v", deviceFilePath, err)
+		memoryFile.Close()
+		s.MemoryLock.RUnlock()
+		return status.Errorf(codes.Unavailable, "failed to read file %v: %v", memoryFilePath, err)
 	}
+	memoryFile.Close()
+	s.MemoryLock.RUnlock()
 
 	dstId := streamInfo.DstId
 	dstGPUInfo := s.Config[dstId]
@@ -226,52 +235,54 @@ func (s *GPUDeviceService) handleRcv(data []byte, streamInfo *StreamInfo) error 
 	numBytes := streamInfo.NumBytes
 	op := streamInfo.Op
 
-	deviceFilePath := s.MemoryFilePath
-	deviceFile, err := os.OpenFile(deviceFilePath, os.O_RDWR, 0666)
+	s.MemoryLock.Lock()
+	defer s.MemoryLock.Unlock()
+	memoryFilePath := s.MemoryFilePath
+	memoryFile, err := os.OpenFile(memoryFilePath, os.O_RDWR, 0666)
 	if err != nil {
-		return status.Errorf(codes.Unavailable, "failed to open file %v: %v", deviceFilePath, err)
+		return status.Errorf(codes.Unavailable, "failed to open file %v: %v", memoryFilePath, err)
 	}
-	defer deviceFile.Close()
+	defer memoryFile.Close()
 
-	originalData, err := readFile(deviceFile, memAddr, numBytes)
+	originalData, err := readFile(memoryFile, memAddr, numBytes)
 	if err != nil {
-		return status.Errorf(codes.Unavailable, "failed to read file %v: %v", deviceFilePath, err)
+		return status.Errorf(codes.Unavailable, "failed to read file %v: %v", memoryFilePath, err)
 	}
 	newData, err := s.executeOp(op, originalData, data)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "failed to exeucte op %v: %v", op, err)
 	}
-	err = writeFile(deviceFile, memAddr, newData)
+	err = writeFile(memoryFile, memAddr, newData)
 	if err != nil {
-		return status.Errorf(codes.Unavailable, "failed to write to file %v: %v", deviceFilePath, err)
+		return status.Errorf(codes.Unavailable, "failed to write to file %v: %v", memoryFilePath, err)
 	}
 
 	return nil
 }
 
 func (s *GPUDeviceService) executeOp(op pb.ReduceOp, originalData []byte, newData []byte) ([]byte, error) {
-	a, err := DeserializeMatrix(originalData)
+	a, err := utils.DeserializeMatrix(originalData)
 	if err != nil {
 		return []byte{}, status.Errorf(codes.FailedPrecondition, "could not deserialize original data to matrix")
 	}
-	b, err := DeserializeMatrix(newData)
+	b, err := utils.DeserializeMatrix(newData)
 	if err != nil {
 		return []byte{}, status.Errorf(codes.InvalidArgument, "could not deserialize new data to matrix")
 	}
 
 	var result *mat.Dense
 	if op == pb.ReduceOp_MAX {
-		result, err = MaxMatrix(a, b)
+		result, err = utils.MaxMatrix(a, b)
 		if err != nil {
 			return []byte{}, status.Errorf(codes.InvalidArgument, "could not get max matrix: %v", err)
 		}
 	} else if op == pb.ReduceOp_MIN {
-		result, err = MinMatrix(a, b)
+		result, err = utils.MinMatrix(a, b)
 		if err != nil {
 			return []byte{}, status.Errorf(codes.InvalidArgument, "could not get min matrix: %v", err)
 		}
 	} else if op == pb.ReduceOp_PROD {
-		result, err = ProdMatrix(a, b)
+		result, err = utils.ProdMatrix(a, b)
 		if err != nil {
 			return []byte{}, status.Errorf(codes.InvalidArgument, "could not multiply matrices: %v", err)
 		}
@@ -281,7 +292,7 @@ func (s *GPUDeviceService) executeOp(op pb.ReduceOp, originalData []byte, newDat
 			return nil, status.Errorf(codes.InvalidArgument, "output matrix has different dimension from original")
 		}
 	} else if op == pb.ReduceOp_SUM {
-		result, err = SumMatrix(a, b)
+		result, err = utils.SumMatrix(a, b)
 		if err != nil {
 			return []byte{}, status.Errorf(codes.InvalidArgument, "could not sum matrices: %v", err)
 		}
@@ -289,7 +300,7 @@ func (s *GPUDeviceService) executeOp(op pb.ReduceOp, originalData []byte, newDat
 		return newData, nil
 	}
 
-	serializedResult, err := SerializeMatrix(result)
+	serializedResult, err := utils.SerializeMatrix(result)
 	if err != nil {
 		return []byte{}, status.Errorf(codes.InvalidArgument, "could not serialize result to bytes")
 	}
@@ -325,35 +336,37 @@ func (s *GPUDeviceService) Forward(ctx context.Context, req *pb.ForwardRequest) 
 		targetBytes := req.OutputSize
 		gradientAddresses := req.GradientAddresses
 
-		deviceFilePath := s.MemoryFilePath
-		deviceFile, err := os.OpenFile(deviceFilePath, os.O_RDWR, 0666)
+		s.MemoryLock.Lock()
+		defer s.MemoryLock.Unlock()
+		memoryFilePath := s.MemoryFilePath
+		memoryFile, err := os.OpenFile(memoryFilePath, os.O_RDWR, 0666)
 		if err != nil {
-			return &pb.ForwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to open file %v: %v", deviceFilePath, err)
+			return &pb.ForwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to open file %v: %v", memoryFilePath, err)
 		}
-		defer deviceFile.Close()
+		defer memoryFile.Close()
 
-		X, err := readMatrix(deviceFile, inputAddr, inputBytes)
+		X, err := readMatrix(memoryFile, inputAddr, inputBytes)
 		if err != nil {
 			return &pb.ForwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to load input: %v", err)
 		}
-		W, err := readMatrix(deviceFile, weightAddr, weightBytes)
+		W, err := readMatrix(memoryFile, weightAddr, weightBytes)
 		if err != nil {
 			return &pb.ForwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to load weight: %v", err)
 		}
-		Y, err := readMatrix(deviceFile, targetAddr, targetBytes)
+		Y, err := readMatrix(memoryFile, targetAddr, targetBytes)
 		if err != nil {
 			return &pb.ForwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to load target output: %v", err)
 		}
 
-		grad, loss, err := LinearCrossEntropyGradients(X, W, Y)
+		grad, loss, err := utils.LinearCrossEntropyGradients(X, W, Y)
 		if err != nil {
 			return &pb.ForwardResponse{Success: false}, status.Errorf(codes.InvalidArgument, "failed to compute gradients: %v", err)
 		}
-		gradChunks := SplitMatrix(grad, len(gradientAddresses))
+		gradChunks := utils.SplitMatrix(grad, len(gradientAddresses))
 
 		var gradBytesChunks [][]byte
 		for _, chunk := range gradChunks {
-			bytes, err := SerializeMatrix(chunk)
+			bytes, err := utils.SerializeMatrix(chunk)
 			if err != nil {
 				return &pb.ForwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to serialize gradient chunk: %v", err)
 			}
@@ -361,7 +374,7 @@ func (s *GPUDeviceService) Forward(ctx context.Context, req *pb.ForwardRequest) 
 		}
 
 		for i, gradientAddr := range gradientAddresses {
-			err = writeFile(deviceFile, gradientAddr.Value, gradBytesChunks[i])
+			err = writeFile(memoryFile, gradientAddr.Value, gradBytesChunks[i])
 			if err != nil {
 				return &pb.ForwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to write gradient chunk to memory: %v", err)
 			}
@@ -373,9 +386,49 @@ func (s *GPUDeviceService) Forward(ctx context.Context, req *pb.ForwardRequest) 
 	}
 }
 
-func (s *GPUDeviceService) Backward(ctx context.Context, req *pb.BackwardRequest, opts ...grpc.CallOption) (*pb.BackwardResponse, error) {
-	// TODO
-	panic("not implemented")
+func (s *GPUDeviceService) Backward(ctx context.Context, req *pb.BackwardRequest) (*pb.BackwardResponse, error) {
+	if req == nil {
+		return nil, status.Errorf(codes.InvalidArgument, "nil request")
+	}
+
+	s.MemoryLock.Lock()
+	defer s.MemoryLock.Unlock()
+	memoryFilePath := s.MemoryFilePath
+	memoryFile, err := os.OpenFile(memoryFilePath, os.O_RDWR, 0666)
+	if err != nil {
+		return &pb.BackwardResponse{Success: false}, status.Errorf(codes.Unavailable, "failed to open file %v: %v", memoryFilePath, err)
+	}
+	defer memoryFile.Close()
+
+	W, err := readMatrix(memoryFile, req.WeightAddress.Value, req.WeightSize)
+	if err != nil {
+		return &pb.BackwardResponse{Success: false}, status.Errorf(codes.InvalidArgument, "failed to load weight: %v", err)
+	}
+	var gradients []*mat.Dense
+	for i, gradientAddr := range req.GradientAddresses {
+		grad, err := readMatrix(memoryFile, gradientAddr.Value, req.GradientSizes[i])
+		if err != nil {
+			return &pb.BackwardResponse{Success: false}, status.Errorf(codes.InvalidArgument, "failed to load gradient chunk: %v", err)
+		}
+		gradients = append(gradients, grad)
+	}
+	mergedGrads, err := utils.MergeMatrix(gradients)
+	if err != nil {
+		return &pb.BackwardResponse{Success: false}, status.Errorf(codes.InvalidArgument, "failed to merge gradients: %v", err)
+	}
+	newW, err := utils.ComputeNewWeights(W, mergedGrads, req.LearningRate)
+	if err != nil {
+		return &pb.BackwardResponse{Success: false}, status.Errorf(codes.InvalidArgument, "failed to compute new weight: %v", err)
+	}
+	serializedNewWeight, err := utils.SerializeMatrix(newW)
+	if err != nil {
+		return &pb.BackwardResponse{Success: false}, status.Errorf(codes.InvalidArgument, "failed to serialize new weight: %v", err)
+	}
+	err = writeFile(memoryFile, req.WeightAddress.Value, serializedNewWeight)
+	if err != nil {
+		return &pb.BackwardResponse{Success: false}, status.Errorf(codes.InvalidArgument, "failed to write new weightto memory: %v", err)
+	}
+	return &pb.BackwardResponse{Success: true}, nil
 }
 
 func readFile(file *os.File, memAddr uint64, numBytes uint64) ([]byte, error) {
@@ -408,5 +461,5 @@ func readMatrix(file *os.File, memAddr uint64, numBytes uint64) (*mat.Dense, err
 	if err != nil {
 		return nil, err
 	}
-	return DeserializeMatrix(data)
+	return utils.DeserializeMatrix(data)
 }

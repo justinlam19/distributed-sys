@@ -1,4 +1,4 @@
-package server_lib
+package utils
 
 import (
 	"bytes"
@@ -43,11 +43,11 @@ func DeserializeMatrix(data []byte) (*mat.Dense, error) {
 	// dimensions (rows and cols)
 	err := binary.Read(buf, binary.LittleEndian, &rows)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.InvalidArgument, "error when reading nRow: %v", err)
 	}
 	err = binary.Read(buf, binary.LittleEndian, &cols)
 	if err != nil {
-		return nil, err
+		return nil, status.Errorf(codes.InvalidArgument, "error when reading nCol: %v", err)
 	}
 
 	// the data itself
@@ -55,7 +55,7 @@ func DeserializeMatrix(data []byte) (*mat.Dense, error) {
 	for i := range matrixData {
 		err := binary.Read(buf, binary.LittleEndian, &matrixData[i])
 		if err != nil {
-			return nil, err
+			return nil, status.Errorf(codes.InvalidArgument, "error when reading matrix data: %v", err)
 		}
 	}
 
@@ -121,8 +121,8 @@ func SumMatrix(a *mat.Dense, b *mat.Dense) (*mat.Dense, error) {
 	return result, nil
 }
 
-func SplitMatrix(gradientMatrix *mat.Dense, numChunks int) []*mat.Dense {
-	rows, cols := gradientMatrix.Dims()
+func SplitMatrix(m *mat.Dense, numChunks int) []*mat.Dense {
+	rows, cols := m.Dims()
 	// Assuming we're splitting by rows, calculate the number of rows per chunk
 	rowsPerChunk := rows / numChunks
 
@@ -135,30 +135,30 @@ func SplitMatrix(gradientMatrix *mat.Dense, numChunks int) []*mat.Dense {
 			// the last chunk includes any remaining rows
 			endRow = rows
 		}
-		subMatrix := gradientMatrix.Slice(startRow, endRow, 0, cols).(*mat.Dense)
+		subMatrix := m.Slice(startRow, endRow, 0, cols).(*mat.Dense)
 		chunks = append(chunks, subMatrix)
 	}
 	return chunks
 }
 
-func MergeMatrix(gradients []*mat.Dense) (*mat.Dense, error) {
+func MergeMatrix(matrices []*mat.Dense) (*mat.Dense, error) {
 	// Ensure there is at least one gradient matrix
-	if len(gradients) == 0 {
-		return nil, errors.New("no gradient matrices provided")
+	if len(matrices) == 0 {
+		return nil, errors.New("no matrices provided")
 	}
 
-	expectedCols := gradients[0].RawMatrix().Cols
+	expectedCols := matrices[0].RawMatrix().Cols
 	var totalRows int
-	for _, grad := range gradients {
+	for _, grad := range matrices {
 		if grad.RawMatrix().Cols != expectedCols {
-			return nil, errors.New("gradient matrices have different number of columns")
+			return nil, errors.New("matrices have different number of columns")
 		}
 		totalRows += grad.RawMatrix().Rows
 	}
 
 	merged := mat.NewDense(totalRows, expectedCols, nil)
 	rowOffset := 0
-	for _, grad := range gradients {
+	for _, grad := range matrices {
 		gradData := grad.RawMatrix().Data
 		for i := 0; i < grad.RawMatrix().Rows; i++ {
 			merged.SetRow(rowOffset+i, gradData[i*grad.RawMatrix().Cols:(i+1)*grad.RawMatrix().Cols])
@@ -166,6 +166,45 @@ func MergeMatrix(gradients []*mat.Dense) (*mat.Dense, error) {
 		rowOffset += grad.RawMatrix().Rows
 	}
 	return merged, nil
+}
+
+// compute softmax(XW)
+func LinearSoftmax(X *mat.Dense, W *mat.Dense, nSamples int, nOutputs int) *mat.Dense {
+	// Z = X * W
+	Z := mat.NewDense(nSamples, nOutputs, nil)
+	Z.Mul(X, W)
+
+	// Yhat = softmax(Y)
+	YHat := mat.NewDense(nSamples, nOutputs, nil)
+	for i := 0; i < nSamples; i++ {
+		row := mat.Row(nil, i, Z)
+		expSum := 0.0
+		for j := range row {
+			row[j] = math.Exp(row[j])
+			expSum += row[j]
+		}
+		for j := range row {
+			row[j] /= expSum
+		}
+		YHat.SetRow(i, row)
+	}
+
+	return YHat
+}
+
+// CrossEntropy(YHat, Y) where Y is assumed to be already 1 hot encoded
+func CrossEntropy(YHat *mat.Dense, Y *mat.Dense, nSamples int, nOutputs int) float64 {
+	loss := 0.0
+	for i := 0; i < nSamples; i++ {
+		for j := 0; j < nOutputs; j++ {
+			y := Y.At(i, j)
+			if y > 0 {
+				loss -= y * math.Log(YHat.At(i, j))
+			}
+		}
+	}
+	loss /= float64(nSamples)
+	return loss
 }
 
 // compute CrossEntropy(softmax(XW), Y) where Y is assumed to be already 1 hot encoded
@@ -182,36 +221,8 @@ func LinearCrossEntropyGradients(X *mat.Dense, W *mat.Dense, Y *mat.Dense) (*mat
 	n := rW
 	c := cY
 
-	// Z = X * W
-	Z := mat.NewDense(m, c, nil)
-	Z.Mul(X, W)
-
-	// Yhat = softmax(Y)
-	YHat := mat.NewDense(m, c, nil)
-	for i := 0; i < m; i++ {
-		row := mat.Row(nil, i, Z)
-		expSum := 0.0
-		for j := range row {
-			row[j] = math.Exp(row[j])
-			expSum += row[j]
-		}
-		for j := range row {
-			row[j] /= expSum
-		}
-		YHat.SetRow(i, row)
-	}
-
-	// Cross Entropy loss
-	loss := 0.0
-	for i := 0; i < m; i++ {
-		for j := 0; j < c; j++ {
-			y := Y.At(i, j)
-			if y > 0 {
-				loss -= y * math.Log(YHat.At(i, j))
-			}
-		}
-	}
-	loss /= float64(m)
+	YHat := LinearSoftmax(X, W, m, c)
+	loss := CrossEntropy(YHat, Y, m, c)
 
 	// Compute Gradients
 	// delta = YHat - Y
@@ -242,4 +253,41 @@ func ComputeNewWeights(W *mat.Dense, Grad *mat.Dense, learningRate float64) (*ma
 		}
 	}
 	return newW, nil
+}
+
+func ArgMax(slice []float64) int {
+	maxIdx := 0
+	maxVal := slice[0]
+
+	for i, val := range slice {
+		if val > maxVal {
+			maxVal = val
+			maxIdx = i
+		}
+	}
+	return maxIdx
+}
+
+func ComputeAccuracy(modelOutput *mat.Dense, targets *mat.Dense) float64 {
+	rows, _ := modelOutput.Dims() // Number of rows (samples)
+
+	correct := 0
+	for i := 0; i < rows; i++ {
+		// Find predicted class: index of max in model output row
+		predRow := modelOutput.RawRowView(i)
+		predClass := ArgMax(predRow)
+
+		// Find true class: index of the "1" in one-hot target row
+		trueRow := targets.RawRowView(i)
+		trueClass := ArgMax(trueRow)
+
+		// Compare predicted and true class
+		if predClass == trueClass {
+			correct++
+		}
+	}
+
+	// Compute accuracy
+	accuracy := float64(correct) / float64(rows)
+	return accuracy
 }
