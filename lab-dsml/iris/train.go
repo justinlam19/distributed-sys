@@ -4,7 +4,9 @@ import (
 	"context"
 	"log"
 	"math/rand"
+	"time"
 
+	gc "cs426.yale.edu/lab-dsml/gpu_coordinator/server_lib"
 	pb "cs426.yale.edu/lab-dsml/gpu_sim/proto"
 	data "cs426.yale.edu/lab-dsml/iris/data"
 	utils "cs426.yale.edu/lab-dsml/utils"
@@ -14,23 +16,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-type Memory struct {
-	data          *[]byte
-	inputAddr     uint64
-	inputSize     uint64
-	weightAddr    uint64
-	weightSize    uint64
-	outputAddr    uint64
-	outputSize    uint64
-	gradientAddrs []uint64
-	gradientSizes []uint64
-}
-
 // returns X, Y, W, Grads, error
 func initIrisData(numDevices uint32) ([][]byte, [][]byte, []byte, [][]byte, *mat.Dense, *mat.Dense, error) {
 	rng := rand.New(rand.NewSource(42))
 
-	trainFeatures, trainTargets, testFeatures, testTargets, err := data.LoadIrisDataset("data/iris.csv", 0.2, rng)
+	trainFeatures, trainTargets, testFeatures, testTargets, err := data.LoadIrisDataset("data/iris.csv", 0.2)
 	if err != nil {
 		return [][]byte{}, [][]byte{}, []byte{}, [][]byte{}, nil, nil, errors.Errorf("failed to load iris dataset: %v", err)
 	}
@@ -83,59 +73,18 @@ func initIrisData(numDevices uint32) ([][]byte, [][]byte, []byte, [][]byte, *mat
 	return serializedFeatures, serializedTargets, serializedWeight, serializedGradients, testFeatures, testTargets, nil
 }
 
-// On AllReduceRing, need to make n * (n - 1) rounds twice (once for reduce then once for gather)
-// e.g. for 4 devices, with the notation being (rank[rcvId, sendId] ... => rank[id0 id1 id2 id3]):
-// REDUCE
-// phase1: 0[3,0] 1[0,1] 2[1,2] 3[2,3] => 0[0 1 2 33] 1[00 1 2 3] 2[0 11 2 3] 3[0 1 22 3]
-// phase2: 0[2,3] 1[3,0] 2[0,1] 3[1,2] => 0[0 1 222 33] 1[00 1 2 333] 2[000 11 2 3] 3[0 111 22 3]
-// phase3: 0[1,2] 1[2,3] 2[3,0] 3[0,1] => 0[0 1111 222 33] 1[00 1 2222 333] 2[000 11 2 3333] 3[0000 111 22 3]
-// GATHER
-// phase1: 0[0,1] 1[1,2] 2[2,3] 3[3,0] => 0[0000 1111 222 33] 1[00 1111 2222 333] 2[000 11 2222 3333] 3[0000 111 22 3333]
-// phase2: 0[3,0] 1[0,1] 2[1,2] 3[2,3] => 0[0000 1111 222 3333] 1[0000 1111 2222 333] 2[000 1111 2222 3333] 3[0000 111 2222 3333]
-// phase3: 0[2,3] 1[3,0] 2[0,1] 3[1,2] => 0[0000 1111 2222 3333] 1[0000 1111 2222 3333] 2[0000 1111 2222 3333] 3[0000 1111 2222 3333]
-func computeDeviceMemAddrs(deviceIds []uint64, deviceMemMap map[uint64]*Memory, numDevices uint32) ([]*pb.DeviceMemAddr, []*pb.DeviceMemAddr) {
-	var reduceDeviceMemAddrs []*pb.DeviceMemAddr
-	var gatherDeviceMemAddrs []*pb.DeviceMemAddr
-	for offset := range numDevices - 1 {
-		// id of gradient chunk to send
-		i := (numDevices - offset) % numDevices
-		for _, srcId := range deviceIds {
-			dstId := (srcId + 1) % uint64(len(deviceIds))
-			srcMemory := deviceMemMap[srcId]
-			dstMemory := deviceMemMap[dstId]
-			reduceDeviceMemAddrs = append(reduceDeviceMemAddrs, &pb.DeviceMemAddr{
-				DeviceId:   &pb.DeviceId{Value: srcId},
-				SrcMemAddr: &pb.MemAddr{Value: srcMemory.gradientAddrs[i]},
-				DstMemAddr: &pb.MemAddr{Value: dstMemory.gradientAddrs[i]},
-				NumBytes:   srcMemory.gradientSizes[i],
-			})
-			i = (i + 1) % numDevices
-		}
-	}
-	for offset := range numDevices - 1 {
-		i := (numDevices - offset - 1) % numDevices
-		for _, srcId := range deviceIds {
-			dstId := (srcId + 1) % uint64(len(deviceIds))
-			srcMemory := deviceMemMap[srcId]
-			dstMemory := deviceMemMap[dstId]
-			gatherDeviceMemAddrs = append(gatherDeviceMemAddrs, &pb.DeviceMemAddr{
-				DeviceId:   &pb.DeviceId{Value: srcId},
-				SrcMemAddr: &pb.MemAddr{Value: srcMemory.gradientAddrs[i]},
-				DstMemAddr: &pb.MemAddr{Value: dstMemory.gradientAddrs[i]},
-				NumBytes:   srcMemory.gradientSizes[i],
-			})
-			i = (i + 1) % numDevices
-		}
-	}
-	return reduceDeviceMemAddrs, gatherDeviceMemAddrs
-}
-
 func main() {
-	coordinatorAddress := "[::1]:8080" // hard coded based on gpu_config.json
+	// hard coded values based on gpu_config.json
+	coordinatorAddress := "[::1]:8080"
 	var numDevices uint32 = 4
-	epochs := 64
 
-	deviceMemMap := make(map[uint64]*Memory)
+	// training hyperparameters
+	// divide lr by numDevices because the gradients are summed, not averaged
+	epochs := 100
+	learningRate := 5e-2 / float64(numDevices)
+	lrDecay := 0.999
+
+	deviceMemMap := make(map[uint64]*gc.Memory)
 
 	// Load the Iris dataset
 	serializedFeatures, serializedTargets, serializedWeight, serializedGradients, testFeatures, testTargets, err := initIrisData(numDevices)
@@ -166,6 +115,7 @@ func main() {
 		log.Fatalf("failed to retrieve metadata for devices")
 	}
 
+	// process the chunked gradients and get their sizes
 	var gradientSizes []uint64
 	var flattenedGradients []byte
 	for _, gradient := range serializedGradients {
@@ -191,6 +141,8 @@ func main() {
 			log.Fatalf("insufficient memory on GPU %v", deviceId)
 		}
 
+		// compute the memory addresses of each of the matrices
+		// this is necessary before concatenating them into a single []byte
 		inputAddr := minAddr
 		weightAddr := minAddr + inputSize
 		outputAddr := weightAddr + weightSize
@@ -205,28 +157,28 @@ func main() {
 		data = append(data, serializedTargets[i]...)
 		data = append(data, flattenedGradients...)
 
-		deviceMemMap[deviceId] = &Memory{
-			data:          &data,
-			inputAddr:     inputAddr,
-			inputSize:     inputSize,
-			weightAddr:    weightAddr,
-			weightSize:    weightSize,
-			outputAddr:    outputAddr,
-			outputSize:    outputSize,
-			gradientAddrs: gradientAddrs,
-			gradientSizes: gradientSizes,
+		deviceMemMap[deviceId] = &gc.Memory{
+			Data:          &data,
+			InputAddr:     inputAddr,
+			InputSize:     inputSize,
+			WeightAddr:    weightAddr,
+			WeightSize:    weightSize,
+			OutputAddr:    outputAddr,
+			OutputSize:    outputSize,
+			GradientAddrs: gradientAddrs,
+			GradientSizes: gradientSizes,
 		}
 	}
 
-	// Memcpy data over
+	// Memcpy data over to all the GPUs
 	for _, deviceId := range deviceIds {
 		memory := deviceMemMap[deviceId]
 		hostToDeviceResponse, err := client.Memcpy(ctx, &pb.MemcpyRequest{
 			Either: &pb.MemcpyRequest_HostToDevice{
 				HostToDevice: &pb.MemcpyHostToDeviceRequest{
-					HostSrcData: *memory.data,
+					HostSrcData: *memory.Data,
 					DstDeviceId: &pb.DeviceId{Value: deviceId},
-					DstMemAddr:  &pb.MemAddr{Value: memory.inputAddr},
+					DstMemAddr:  &pb.MemAddr{Value: memory.InputAddr},
 				},
 			},
 		})
@@ -243,20 +195,25 @@ func main() {
 		}
 	}
 
+	// compute the flows of communication from which memory address to which memory address during AllReduceRing
+	reduceDeviceMemAddrs, gatherDeviceMemAddrs := gc.ComputeDeviceMemAddrsForAllReduceRing(deviceIds, deviceMemMap, numDevices)
+
+	// begin training
 	for epoch := range epochs {
+		// forward pass + compute local gradients
 		forwardRequests := make(map[uint64]*pb.ForwardRequest)
 		for deviceId, memory := range deviceMemMap {
 			var gradientAddresses []*pb.MemAddr
-			for _, gradientAddr := range memory.gradientAddrs {
+			for _, gradientAddr := range memory.GradientAddrs {
 				gradientAddresses = append(gradientAddresses, &pb.MemAddr{Value: gradientAddr})
 			}
 			forwardRequests[deviceId] = &pb.ForwardRequest{
-				InputAddress:      &pb.MemAddr{Value: memory.inputAddr},
-				InputSize:         memory.inputSize,
-				WeightAddress:     &pb.MemAddr{Value: memory.weightAddr},
-				WeightSize:        memory.weightSize,
-				OutputAddress:     &pb.MemAddr{Value: memory.outputAddr},
-				OutputSize:        memory.outputSize,
+				InputAddress:      &pb.MemAddr{Value: memory.InputAddr},
+				InputSize:         memory.InputSize,
+				WeightAddress:     &pb.MemAddr{Value: memory.WeightAddr},
+				WeightSize:        memory.WeightSize,
+				OutputAddress:     &pb.MemAddr{Value: memory.OutputAddr},
+				OutputSize:        memory.OutputSize,
 				GradientAddresses: gradientAddresses,
 				ForwardOp:         pb.ForwardOp_LINEAR_CROSS_ENTROPY,
 			}
@@ -282,7 +239,8 @@ func main() {
 		if !groupStartResponse.Success {
 			log.Fatalf("failed group start on comm %v", commId)
 		}
-		reduceDeviceMemAddrs, gatherDeviceMemAddrs := computeDeviceMemAddrs(deviceIds, deviceMemMap, numDevices)
+
+		// AllReduceRing to sum all gradients
 		allReduceResponse, err := client.AllReduceRing(ctx, &pb.AllReduceRingRequest{
 			CommId:               commId,
 			Op:                   pb.ReduceOp_SUM,
@@ -303,6 +261,8 @@ func main() {
 		if !groupEndResponse.Success {
 			log.Fatalf("failed group end on comm %v", commId)
 		}
+
+		// Wait for AllReduceRing to finish
 		for {
 			commStatusResponse, err := client.GetCommStatus(ctx, &pb.GetCommStatusRequest{CommId: commId})
 			if err != nil {
@@ -314,20 +274,22 @@ func main() {
 			if commStatusResponse.Status == pb.Status_SUCCESS {
 				break
 			}
+			time.Sleep(20 * time.Millisecond)
 		}
 
+		// Backward pass to update weights
 		backwardsRequests := make(map[uint64]*pb.BackwardRequest)
 		for deviceId, memory := range deviceMemMap {
 			var gradientAddresses []*pb.MemAddr
-			for _, gradientAddr := range memory.gradientAddrs {
+			for _, gradientAddr := range memory.GradientAddrs {
 				gradientAddresses = append(gradientAddresses, &pb.MemAddr{Value: gradientAddr})
 			}
 			backwardsRequests[deviceId] = &pb.BackwardRequest{
-				WeightAddress:     &pb.MemAddr{Value: memory.weightAddr},
-				WeightSize:        memory.weightSize,
+				WeightAddress:     &pb.MemAddr{Value: memory.WeightAddr},
+				WeightSize:        memory.WeightSize,
 				GradientAddresses: gradientAddresses,
-				GradientSizes:     memory.gradientSizes,
-				LearningRate:      1e-2 / float64(numDevices),
+				GradientSizes:     memory.GradientSizes,
+				LearningRate:      learningRate,
 			}
 		}
 		client.BackwardBroadcast(
@@ -338,14 +300,15 @@ func main() {
 			},
 		)
 
+		// Get weight from any GPU
 		deviceId0 := deviceIds[0]
 		memory0 := deviceMemMap[deviceId0]
 		deviceToHostResponse, err := client.Memcpy(ctx, &pb.MemcpyRequest{
 			Either: &pb.MemcpyRequest_DeviceToHost{
 				DeviceToHost: &pb.MemcpyDeviceToHostRequest{
 					SrcDeviceId: &pb.DeviceId{Value: deviceId0},
-					SrcMemAddr:  &pb.MemAddr{Value: memory0.weightAddr},
-					NumBytes:    uint64(memory0.weightSize),
+					SrcMemAddr:  &pb.MemAddr{Value: memory0.WeightAddr},
+					NumBytes:    uint64(memory0.WeightSize),
 				},
 			},
 		})
@@ -360,19 +323,20 @@ func main() {
 		default:
 			log.Fatalf("invalid response format when memcpy from device %v", deviceId0)
 		}
-
 		W, err := utils.DeserializeMatrix(weightBuffer)
 		if err != nil {
 			log.Fatalf("couldn't deserialize weight matrix: %v", err)
 		}
 
+		// compute test loss and accuracy
 		nSamples := testFeatures.RawMatrix().Rows
 		nOutput := testTargets.RawMatrix().Cols
-
 		predictions := utils.LinearSoftmax(testFeatures, W, nSamples, nOutput)
 		testLoss := utils.CrossEntropy(predictions, testTargets, nSamples, nOutput)
 		accuracy := utils.ComputeAccuracy(predictions, testTargets)
-
 		log.Printf("epoch %v: training loss: %v | test loss: %v | test accuracy: %v", epoch, forwardResponse.Loss, testLoss, accuracy)
+
+		// exponential learning rate decay
+		learningRate *= lrDecay
 	}
 }

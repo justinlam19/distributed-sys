@@ -134,14 +134,21 @@ func (s *GPUCoordinatorService) GetCommStatus(ctx context.Context, req *pb.GetCo
 	if inProgress {
 		return &pb.GetCommStatusResponse{Status: pb.Status_IN_PROGRESS}, nil
 	} else {
+		for _, clientInfo := range deviceClientInfo {
+			clientInfo.StreamIds[commId] = []uint64{}
+		}
 		return &pb.GetCommStatusResponse{Status: pb.Status_SUCCESS}, nil
 	}
 }
 
+// group start and end are used to start nonblocking group operations
+// but all operations implemented here are nonblocking by default
 func (s *GPUCoordinatorService) GroupStart(ctx context.Context, req *pb.GroupStartRequest) (*pb.GroupStartResponse, error) {
 	return &pb.GroupStartResponse{Success: true}, nil
 }
 
+// group start and end are used to start nonblocking group operations
+// but all operations implemented here are nonblocking by default
 func (s *GPUCoordinatorService) GroupEnd(ctx context.Context, req *pb.GroupEndRequest) (*pb.GroupEndResponse, error) {
 	return &pb.GroupEndResponse{Success: true}, nil
 }

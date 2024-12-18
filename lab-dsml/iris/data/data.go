@@ -34,18 +34,16 @@ func oneHotEncode(labels []string) (*mat.Dense, error) {
 }
 
 // LoadIrisDataset reads the Iris dataset, ignoring headers, and separates it into training data and targets.
-func LoadIrisDataset(filePath string, testRatio float64, rng *rand.Rand) (*mat.Dense, *mat.Dense, *mat.Dense, *mat.Dense, error) {
-	// Open the CSV file
+func LoadIrisDataset(filePath string, testRatio float64) (*mat.Dense, *mat.Dense, *mat.Dense, *mat.Dense, error) {
+	rng := rand.New(rand.NewSource(42))
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("error opening file: %w", err)
 	}
 	defer file.Close()
 
-	// Create a CSV reader
 	reader := csv.NewReader(file)
-
-	// Read all rows
 	records, err := reader.ReadAll()
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("error reading CSV: %w", err)
@@ -78,7 +76,6 @@ func LoadIrisDataset(filePath string, testRatio float64, rng *rand.Rand) (*mat.D
 		targets = append(targets, strings.TrimSpace(record[4]))
 	}
 
-	// Original feature matrix
 	numRows := len(features)
 	numCols := len(features[0]) + 1 // +1 for the bias term
 

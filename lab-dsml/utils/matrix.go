@@ -273,21 +273,19 @@ func ComputeAccuracy(modelOutput *mat.Dense, targets *mat.Dense) float64 {
 
 	correct := 0
 	for i := 0; i < rows; i++ {
-		// Find predicted class: index of max in model output row
+		// predicted class: index of max in model output row
 		predRow := modelOutput.RawRowView(i)
 		predClass := ArgMax(predRow)
 
-		// Find true class: index of the "1" in one-hot target row
+		// true class: index of the "1" in one-hot target row
 		trueRow := targets.RawRowView(i)
 		trueClass := ArgMax(trueRow)
 
-		// Compare predicted and true class
 		if predClass == trueClass {
 			correct++
 		}
 	}
 
-	// Compute accuracy
 	accuracy := float64(correct) / float64(rows)
 	return accuracy
 }

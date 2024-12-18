@@ -131,7 +131,7 @@ func (s *GPUDeviceService) repeatSend() {
 		select {
 		case <-s.closeChan:
 			return
-		case <-time.After(10 * time.Millisecond):
+		case <-time.After(20 * time.Millisecond):
 			if !s.SendStreamQueue.Empty() {
 				streamInfo := s.SendStreamQueue.Dequeue()
 				streamId := streamInfo.StreamId
@@ -216,9 +216,19 @@ func (s *GPUDeviceService) StreamSend(streamServer grpc.ClientStreamingServer[pb
 
 		data := dataChunk.Data
 		streamId := dataChunk.StreamId.Value
-		s.RcvStreamLock.RLock()
-		streamInfo := s.RcvStreamMap[streamId]
-		s.RcvStreamLock.RUnlock()
+
+		ok := false
+		tries := 5
+		var streamInfo *StreamInfo
+		for !ok && tries > 0 {
+			s.RcvStreamLock.RLock()
+			streamInfo, ok = s.RcvStreamMap[streamId]
+			s.RcvStreamLock.RUnlock()
+			time.Sleep(50 * time.Millisecond)
+		}
+		if !ok {
+			return status.Errorf(codes.InvalidArgument, "received nonexistent stream Id")
+		}
 
 		err = s.handleRcv(data, streamInfo)
 		if err != nil {
